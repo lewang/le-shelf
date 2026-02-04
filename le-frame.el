@@ -3,7 +3,8 @@
 
 (defmacro le-frame-with-max (&rest body)
   "provide max-width and height"
-  `(pcase-let ((`(((geometry _ _ ,max-width ,max-height))) (display-monitor-attributes-list)))
+  `(pcase-let ((`(,_ ,_ ,max-width ,max-height)
+                (alist-get 'geometry (car (display-monitor-attributes-list)))))
      ,@body))
 
 ;;;###autoload
