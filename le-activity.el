@@ -96,6 +96,17 @@ Derives it from the claude-code-ide buffer in the activity's state."
   (setf (activities-activity-etc activity)
         (map-delete (activities-activity-etc activity) 'le::project-root)))
 
+;;;###autoload
+(defun le-activity-current-project ()
+  "Return the project root directory of the current activity, or nil."
+  (when-let* ((activity (activities-current))
+              (dir (or (map-elt (activities-activity-etc activity) 'le::project-root)
+                       (let ((state (or (activities-activity-last activity)
+                                        (activities-activity-default activity))))
+                         (when state
+                           (le-activity--project-dir-from-state state))))))
+    dir))
+
 (advice-add 'activities-save :before #'le-activity--save-project-root)
 (advice-add 'activities-revert :before #'le-activity--reset-project-root)
 
