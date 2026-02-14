@@ -1,4 +1,4 @@
-;;; le-activity.el --- Buffer and activity utilities -*- lexical-binding: t; -*-
+;;; le-activities.el --- Buffer and activity utilities -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2025
 
@@ -17,7 +17,7 @@
 
 (require 'activities)
 
-(defun le-activity--dir-from-buffer (ab)
+(defun le-activities--dir-from-buffer (ab)
   "Extract a directory from activities-buffer struct AB.
 If the buffer is live, use its `default-directory'.  Otherwise
 fall back to the bookmark's `project-dir' or `filename' property."
@@ -32,7 +32,7 @@ fall back to the bookmark's `project-dir' or `filename' property."
      ((activities-buffer-filename ab)
       (file-name-directory (activities-buffer-filename ab))))))
 
-(defun le-activity--project-dir-from-state (state)
+(defun le-activities--project-dir-from-state (state)
   "Return the project directory from STATE's claude-code-ide buffer.
 Scans window state leaves for a buffer whose bookmark has a
 `claude-code-ide-bookmark-handler'.  Returns the `project-dir'
@@ -46,10 +46,10 @@ bookmark property, or `default-directory' if the buffer is live."
          (when (and ab (activities-buffer-bookmark ab)
                     (eq 'claude-code-ide-bookmark-handler
                         (bookmark-prop-get (activities-buffer-bookmark ab) 'handler)))
-           (throw 'found (le-activity--dir-from-buffer ab))))))
+           (throw 'found (le-activities--dir-from-buffer ab))))))
     nil))
 
-(defun le-activity--target-dir (target)
+(defun le-activities--target-dir (target)
   "Return the directory associated with TARGET.
 TARGET is a buffer name or file path."
   (if-let* ((buf (get-buffer target)))
@@ -59,58 +59,58 @@ TARGET is a buffer name or file path."
           (file-name-as-directory target)
         (file-name-directory (expand-file-name target))))))
 
-(defun le-activity--find-best (target-dir)
+(defun le-activities--find-best (target-dir)
   "Return the activity whose `le::project-root' best matches TARGET-DIR.
 Best match is the activity with the longest `le::project-root'
 that is a prefix of TARGET-DIR."
   (let ((target-dir (expand-file-name (file-name-as-directory target-dir)))
         best best-len)
-    (message "le-activity: target-dir=%s" target-dir)
+    (message "le-activities: target-dir=%s" target-dir)
     (dolist (entry activities-activities)
       (pcase-let* ((`(,name . ,activity) entry)
                    (dir (map-elt (activities-activity-etc activity) 'le::project-root)))
         (when dir
-          (message "le-activity:   activity=%s le::project-root=%s" name dir)
+          (message "le-activities:   activity=%s le::project-root=%s" name dir)
           (when (and (string-prefix-p dir target-dir)
                      (or (null best-len) (> (length dir) best-len)))
-            (message "le-activity:   match! activity=%s dir=%s len=%d" name dir (length dir))
+            (message "le-activities:   match! activity=%s dir=%s len=%d" name dir (length dir))
             (setq best activity
                   best-len (length dir))))))
-    (message "le-activity: best=%s" (and best (activities-activity-name best)))
+    (message "le-activities: best=%s" (and best (activities-activity-name best)))
     best))
 
-(defun le-activity--save-project-root (activity &rest _)
+(defun le-activities--save-project-root (activity &rest _)
   "Set `le::project-root' in ACTIVITY's etc if not already set.
 Derives it from the claude-code-ide buffer in the activity's state."
   (unless (map-elt (activities-activity-etc activity) 'le::project-root)
     (let* ((state (or (activities-activity-last activity)
                       (activities-activity-default activity)))
            (dir (when state
-                  (le-activity--project-dir-from-state state))))
+                  (le-activities--project-dir-from-state state))))
       (when dir
         (setf (map-elt (activities-activity-etc activity) 'le::project-root)
               (expand-file-name (file-name-as-directory dir)))))))
 
-(defun le-activity--reset-project-root (activity &rest _)
+(defun le-activities--reset-project-root (activity &rest _)
   "Clear `le::project-root' from ACTIVITY's etc so it gets re-derived on next save."
   (setf (activities-activity-etc activity)
         (map-delete (activities-activity-etc activity) 'le::project-root)))
 
 ;;;###autoload
-(defun le-activity-current-project ()
+(defun le-activities-current-project ()
   "Return the project root directory of the current activity, or nil."
   (when-let* ((activity (activities-current))
               (dir (or (map-elt (activities-activity-etc activity) 'le::project-root)
                        (let ((state (or (activities-activity-last activity)
                                         (activities-activity-default activity))))
                          (when state
-                           (le-activity--project-dir-from-state state))))))
+                           (le-activities--project-dir-from-state state))))))
     dir))
 
-(advice-add 'activities-save :before #'le-activity--save-project-root)
-(advice-add 'activities-revert :before #'le-activity--reset-project-root)
+(advice-add 'activities-save :before #'le-activities--save-project-root)
+(advice-add 'activities-revert :before #'le-activities--reset-project-root)
 
-(defun le-activity--find-frame (activity)
+(defun le-activities--find-frame (activity)
   "Return the frame whose tab has ACTIVITY, or nil.
 Searches all frames when `activities-tabs-mode' is active."
   (when (bound-and-true-p activities-tabs-mode)
@@ -124,31 +124,31 @@ Searches all frames when `activities-tabs-mode' is active."
         nil))))
 
 ;;;###autoload
-(defun le-activity-visit (target)
+(defun le-activities-visit (target)
   "Visit TARGET in its matching activity.
 TARGET is a buffer name or file path.  If an activity is found
 whose buffers share the same directory tree, switch to that
 activity (resuming it if necessary) and display TARGET there.
 Otherwise use the default display action."
   (interactive "sBuffer or file: ")
-  (let* ((target-dir (le-activity--target-dir target))
+  (let* ((target-dir (le-activities--target-dir target))
          (activity (when target-dir
-                     (le-activity--find-best target-dir))))
-    (message "le-activity-visit: target=%s target-dir=%s activity=%s tabs-mode=%s"
+                     (le-activities--find-best target-dir))))
+    (message "le-activities-visit: target=%s target-dir=%s activity=%s tabs-mode=%s"
              target target-dir
              (and activity (activities-activity-name activity))
              (bound-and-true-p activities-tabs-mode))
     (if activity
         (progn
           ;; Select the frame that owns this activity's tab before resuming.
-          (when-let* ((frame (le-activity--find-frame activity)))
-            (message "le-activity-visit: selecting frame %s" frame)
+          (when-let* ((frame (le-activities--find-frame activity)))
+            (message "le-activities-visit: selecting frame %s" frame)
             (select-frame-set-input-focus frame))
-          (message "le-activity-visit: resuming activity %s (active=%s)"
+          (message "le-activities-visit: resuming activity %s (active=%s)"
                    (activities-activity-name activity)
                    (activities-activity-active-p activity))
           (activities-resume activity)
-          (message "le-activity-visit: after resume, current=%s"
+          (message "le-activities-visit: after resume, current=%s"
                    (and (activities-current)
                         (activities-activity-name (activities-current))))
           (pop-to-buffer (if (get-buffer target)
@@ -161,8 +161,8 @@ Otherwise use the default display action."
 
 ;;;###autoload
 (with-eval-after-load 'embark
-  (define-key embark-buffer-map (kbd "v") #'le-activity-visit)
-  (define-key embark-file-map   (kbd "v") #'le-activity-visit))
+  (define-key embark-buffer-map (kbd "v") #'le-activities-visit)
+  (define-key embark-file-map   (kbd "v") #'le-activities-visit))
 
-(provide 'le-activity)
-;;; le-activity.el ends here
+(provide 'le-activities)
+;;; le-activities.el ends here
