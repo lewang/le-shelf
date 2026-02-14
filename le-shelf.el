@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2025
 
-;; Author: Lewis Wang
+;; Author: Le Wang
 ;; Keywords: miscellaneous
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
