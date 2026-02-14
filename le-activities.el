@@ -97,7 +97,7 @@ Derives it from the claude-code-ide buffer in the activity's state."
         (map-delete (activities-activity-etc activity) 'le::project-root)))
 
 ;;;###autoload
-(defun le-activities-current-project ()
+(defun le-activities-root ()
   "Return the project root directory of the current activity, or nil."
   (when-let* ((activity (activities-current))
               (dir (or (map-elt (activities-activity-etc activity) 'le::project-root)
