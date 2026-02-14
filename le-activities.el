@@ -97,19 +97,26 @@ Derives it from the claude-code-ide buffer in the activity's state."
         (map-delete (activities-activity-etc activity) 'le::project-root)))
 
 ;;;###autoload
-(defun le-activities-root ()
-  "Return the project root directory of the current activity, or nil."
-  (when-let* ((activity (activities-current))
-              (dir (or (map-elt (activities-activity-etc activity) 'le::project-root)
-                       (let ((state (or (activities-activity-last activity)
-                                        (activities-activity-default activity))))
-                         (when state
-                           (le-activities--project-dir-from-state state))))))
+(defun le-activities-root (&optional activity)
+  "Return the project root directory of ACTIVITY, or nil.
+ACTIVITY defaults to the current activity.  When called
+interactively, display the result in the echo area."
+  (interactive)
+  (let* ((activity (or activity (activities-current)))
+         (dir (when activity
+                (or (map-elt (activities-activity-etc activity) 'le::project-root)
+                    (let ((state (or (activities-activity-last activity)
+                                     (activities-activity-default activity))))
+                      (when state
+                        (le-activities--project-dir-from-state state)))))))
+    (when (called-interactively-p 'interactive)
+      (message "%s" (or dir "No project root found")))
     dir))
 
 (advice-add 'activities-save :before #'le-activities--save-project-root)
 (advice-add 'activities-revert :before #'le-activities--reset-project-root)
 
+;;;###autoload
 (defun le-activities--find-frame (activity)
   "Return the frame whose tab has ACTIVITY, or nil.
 Searches all frames when `activities-tabs-mode' is active."
