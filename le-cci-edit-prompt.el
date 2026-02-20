@@ -7,6 +7,9 @@
 ;;
 ;; Prompts entered via C-c C-c are also saved to a per-project ring,
 ;; so they survive even if Claude Code never registered them.
+;;
+;; History merge: JSONL positions are authoritative.  Ring-only entries
+;; (not found in any JSONL batch) appear at the front.
 
 ;;; Code:
 
@@ -32,8 +35,9 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 (cl-defstruct (le::cci--state (:copier nil))
   "State for a CCI prompt buffer."
   (project-root nil :documentation "Expanded project root for this prompt.")
-  (history nil :documentation "Merged history strings, most recent first.")
-  (position nil :documentation "Current index into history, or nil.")
+  (ring nil :documentation "Ring entries for this project (snapshot at init).")
+  (jsonl-history nil :documentation "JSONL history strings, most recent first.")
+  (position nil :documentation "Current index into effective history, or nil.")
   (saved-input nil :documentation "Buffer contents saved before history navigation.")
   (offsets nil :documentation "Vector of byte offsets for user messages (oldest first).")
   (loaded-count 0 :documentation "How many entries from the end of offsets have been loaded.")
@@ -47,6 +51,19 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 
 (defvar le::cci--history-batch-size 5
   "Number of history entries to load per batch.")
+
+;;;; Effective history (merged view)
+
+(defun le::cci--ring-only-entries (st)
+  "Return ring entries from ST that haven't appeared in any JSONL batch."
+  (let ((seen (le::cci--state-jsonl-seen st)))
+    (cl-remove-if (lambda (s) (gethash s seen))
+                  (le::cci--state-ring st))))
+
+(defun le::cci--effective-history (st)
+  "Return the merged history: ring-only entries, then JSONL entries."
+  (append (le::cci--ring-only-entries st)
+          (le::cci--state-jsonl-history st)))
 
 ;;;; Project / session file helpers
 
@@ -110,9 +127,8 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
 ;;;; Lazy batch loading
 
 (defun le::cci--load-history-batch ()
-  "Load the next batch of history entries.
-Works backwards from the end of the offsets vector.
-Deduplicates against ring entries already in history."
+  "Load the next batch of JSONL history entries.
+Works backwards from the end of the offsets vector."
   (let* ((st le::cci--st)
          (file (le::cci--state-file st))
          (offsets (le::cci--state-offsets st))
@@ -143,8 +159,8 @@ Deduplicates against ring entries already in history."
                     (when text
                       (puthash text t seen)
                       (push text new-entries)))))))
-          (setf (le::cci--state-history st)
-                (append (le::cci--state-history st) new-entries))
+          (setf (le::cci--state-jsonl-history st)
+                (append (le::cci--state-jsonl-history st) new-entries))
           (cl-incf (le::cci--state-loaded-count st) batch-size))))))
 
 (defun le::cci--history-can-load-more-p ()
@@ -165,21 +181,21 @@ Deduplicates against ring entries already in history."
           (setf (le::cci--state-saved-input st) (buffer-string))
           (setf (le::cci--state-position st) 0))
       (cl-incf (le::cci--state-position st)))
-    (while (and (>= (le::cci--state-position st)
-                    (length (le::cci--state-history st)))
-                (le::cci--history-can-load-more-p))
-      (le::cci--load-history-batch))
-    (if (>= (le::cci--state-position st)
-            (length (le::cci--state-history st)))
-        (progn
-          (if (zerop (le::cci--state-position st))
-              (setf (le::cci--state-position st) nil)
-            (cl-decf (le::cci--state-position st)))
-          (message "End of history"))
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (nth (le::cci--state-position st)
-                     (le::cci--state-history st)))))))
+    ;; Load more batches until we have enough or exhaust offsets
+    (let ((hist (le::cci--effective-history st)))
+      (while (and (>= (le::cci--state-position st) (length hist))
+                  (le::cci--history-can-load-more-p))
+        (le::cci--load-history-batch)
+        (setq hist (le::cci--effective-history st)))
+      (if (>= (le::cci--state-position st) (length hist))
+          (progn
+            (if (zerop (le::cci--state-position st))
+                (setf (le::cci--state-position st) nil)
+              (cl-decf (le::cci--state-position st)))
+            (message "End of history"))
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (nth (le::cci--state-position st) hist)))))))
 
 (defun le::cci-history-next ()
   "Navigate to the next (newer) history entry."
@@ -195,10 +211,10 @@ Deduplicates against ring entries already in history."
         (insert (or (le::cci--state-saved-input st) ""))))
      (t
       (cl-decf (le::cci--state-position st))
-      (let ((inhibit-read-only t))
+      (let* ((hist (le::cci--effective-history st))
+             (inhibit-read-only t))
         (erase-buffer)
-        (insert (nth (le::cci--state-position st)
-                     (le::cci--state-history st))))))))
+        (insert (nth (le::cci--state-position st) hist)))))))
 
 ;;;; Major mode
 
@@ -240,24 +256,19 @@ Deduplicates against ring entries already in history."
 (defun le::cci--history-init (project-root)
   "Initialize history state for the current prompt buffer.
 PROJECT-ROOT is the project directory to find session history for.
-Ring entries for this project are prepended, deduplicated against JSONL."
+JSONL positions are authoritative; ring-only entries appear at the front."
   (let* ((root (expand-file-name project-root))
          (file (le::cci--session-jsonl-file root))
          (seen (make-hash-table :test 'equal))
          (ring (gethash root le::cci--prompt-rings)))
     (setf (le::cci--state-project-root le::cci--st) root)
     (setf (le::cci--state-jsonl-seen le::cci--st) seen)
+    (setf (le::cci--state-ring le::cci--st) ring)
     (when file
       (setf (le::cci--state-file le::cci--st) file)
       (setf (le::cci--state-offsets le::cci--st)
             (le::cci--scan-message-offsets file))
-      (le::cci--load-history-batch))
-    ;; Prepend ring entries that aren't already in JSONL history
-    (when ring
-      (let ((unique (cl-remove-if (lambda (s) (gethash s seen)) ring)))
-        (when unique
-          (setf (le::cci--state-history le::cci--st)
-                (append unique (le::cci--state-history le::cci--st))))))))
+      (le::cci--load-history-batch))))
 
 ;;;; Main entry point
 
