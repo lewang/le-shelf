@@ -276,24 +276,32 @@ than the first sync point."
 ;;;###autoload
 (defun le::cci-edit-prompt ()
   "Open a buffer for composing a Claude Code prompt.
+If the prompt buffer already exists, toggle voice recording in it.
 M-p/M-n traverse history from the latest session.  C-c C-c finishes."
   (interactive)
   (let* ((root (or (when-let* ((proj (project-current)))
                      (project-root proj))
                    default-directory))
          (short-root (abbreviate-file-name (directory-file-name root)))
-         (buf (generate-new-buffer (format "*cci-prompt: %s*" short-root))))
-    (with-current-buffer buf
-      (le::cci-prompt-mode)
-      (setq le::cci--st
-            (make-le::cci--state
-             :saved-winconf (current-window-configuration)
-             :finish-callback (lambda (text)
-                                (claude-code-ide-send-prompt text))))
-      (setq header-line-format
-            (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root))
-      (le::cci--history-init root)
-      (pop-to-buffer (current-buffer)))))
+         (buf-name (format "*cci-prompt: %s*" short-root))
+         (existing (get-buffer buf-name)))
+    (if existing
+        (progn
+          (pop-to-buffer existing)
+          (pr-whisper-toggle-recording nil))
+      (let ((buf (generate-new-buffer buf-name)))
+        (with-current-buffer buf
+          (le::cci-prompt-mode)
+          (setq le::cci--st
+                (make-le::cci--state
+                 :saved-winconf (current-window-configuration)
+                 :finish-callback (lambda (text)
+                                    (claude-code-ide-send-prompt text))))
+          (setq header-line-format
+                (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root))
+          (le::cci--history-init root)
+          (toggle-truncate-lines +1)
+          (pop-to-buffer (current-buffer)))))))
 
 (provide 'le-cci-edit-prompt)
 ;;; le-cci-edit-prompt.el ends here
