@@ -8,8 +8,8 @@
 ;; Prompts entered via C-c C-c are also saved to a per-project ring,
 ;; so they survive even if Claude Code never registered them.
 ;;
-;; History merge: JSONL positions are authoritative.  Ring-only entries
-;; (not found in any JSONL batch) appear at the front.
+;; History merge: the first JSONL batch is compared against the ring.
+;; Ring entries newer than the first sync point (match) are prepended.
 
 ;;; Code:
 
@@ -35,13 +35,11 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 (cl-defstruct (le::cci--state (:copier nil))
   "State for a CCI prompt buffer."
   (project-root nil :documentation "Expanded project root for this prompt.")
-  (ring nil :documentation "Ring entries for this project (snapshot at init).")
-  (jsonl-history nil :documentation "JSONL history strings, most recent first.")
-  (position nil :documentation "Current index into effective history, or nil.")
+  (history nil :documentation "Merged history, most recent first.")
+  (position nil :documentation "Current index into history, or nil.")
   (saved-input nil :documentation "Buffer contents saved before history navigation.")
   (offsets nil :documentation "Vector of byte offsets for user messages (oldest first).")
   (loaded-count 0 :documentation "How many entries from the end of offsets have been loaded.")
-  (jsonl-seen nil :documentation "Hash table of JSONL-loaded strings for dedup.")
   (file nil :documentation "Path to the JSONL session file.")
   (finish-callback nil :documentation "Function called with buffer text on C-c C-c.")
   (saved-winconf nil :documentation "Window configuration saved before prompt buffer."))
@@ -51,19 +49,6 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 
 (defvar le::cci--history-batch-size 5
   "Number of history entries to load per batch.")
-
-;;;; Effective history (merged view)
-
-(defun le::cci--ring-only-entries (st)
-  "Return ring entries from ST that haven't appeared in any JSONL batch."
-  (let ((seen (le::cci--state-jsonl-seen st)))
-    (cl-remove-if (lambda (s) (gethash s seen))
-                  (le::cci--state-ring st))))
-
-(defun le::cci--effective-history (st)
-  "Return the merged history: ring-only entries, then JSONL entries."
-  (append (le::cci--ring-only-entries st)
-          (le::cci--state-jsonl-history st)))
 
 ;;;; Project / session file helpers
 
@@ -131,8 +116,7 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
 Works backwards from the end of the offsets vector."
   (let* ((st le::cci--st)
          (file (le::cci--state-file st))
-         (offsets (le::cci--state-offsets st))
-         (seen (le::cci--state-jsonl-seen st)))
+         (offsets (le::cci--state-offsets st)))
     (when (and file offsets)
       (let* ((total (length offsets))
              (already (le::cci--state-loaded-count st))
@@ -157,10 +141,9 @@ Works backwards from the end of the offsets vector."
                                 'utf-8))
                          (text (le::cci--extract-message-text line)))
                     (when text
-                      (puthash text t seen)
                       (push text new-entries)))))))
-          (setf (le::cci--state-jsonl-history st)
-                (append (le::cci--state-jsonl-history st) new-entries))
+          (setf (le::cci--state-history st)
+                (append (le::cci--state-history st) new-entries))
           (cl-incf (le::cci--state-loaded-count st) batch-size))))))
 
 (defun le::cci--history-can-load-more-p ()
@@ -169,6 +152,26 @@ Works backwards from the end of the offsets vector."
     (and (le::cci--state-offsets st)
          (< (le::cci--state-loaded-count st)
             (length (le::cci--state-offsets st))))))
+
+;;;; Ring merge
+
+(defun le::cci--merge-ring (st)
+  "Prepend ring-only entries that are newer than the first JSONL match.
+Walk the ring most-recent-first; stop at the first entry found in
+the JSONL batch.  Everything before that sync point is a missed
+prompt that gets prepended to history."
+  (let* ((root (le::cci--state-project-root st))
+         (ring (gethash root le::cci--prompt-rings))
+         (jsonl-set (let ((ht (make-hash-table :test 'equal)))
+                      (dolist (h (le::cci--state-history st) ht)
+                        (puthash h t ht))))
+         pre)
+    (cl-loop for entry in ring
+             if (gethash entry jsonl-set) return nil
+             do (push entry pre))
+    (when pre
+      (setf (le::cci--state-history st)
+            (append (nreverse pre) (le::cci--state-history st))))))
 
 ;;;; History navigation commands
 
@@ -181,21 +184,21 @@ Works backwards from the end of the offsets vector."
           (setf (le::cci--state-saved-input st) (buffer-string))
           (setf (le::cci--state-position st) 0))
       (cl-incf (le::cci--state-position st)))
-    ;; Load more batches until we have enough or exhaust offsets
-    (let ((hist (le::cci--effective-history st)))
-      (while (and (>= (le::cci--state-position st) (length hist))
-                  (le::cci--history-can-load-more-p))
-        (le::cci--load-history-batch)
-        (setq hist (le::cci--effective-history st)))
-      (if (>= (le::cci--state-position st) (length hist))
-          (progn
-            (if (zerop (le::cci--state-position st))
-                (setf (le::cci--state-position st) nil)
-              (cl-decf (le::cci--state-position st)))
-            (message "End of history"))
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (nth (le::cci--state-position st) hist)))))))
+    (while (and (>= (le::cci--state-position st)
+                    (length (le::cci--state-history st)))
+                (le::cci--history-can-load-more-p))
+      (le::cci--load-history-batch))
+    (if (>= (le::cci--state-position st)
+            (length (le::cci--state-history st)))
+        (progn
+          (if (zerop (le::cci--state-position st))
+              (setf (le::cci--state-position st) nil)
+            (cl-decf (le::cci--state-position st)))
+          (message "End of history"))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (nth (le::cci--state-position st)
+                     (le::cci--state-history st)))))))
 
 (defun le::cci-history-next ()
   "Navigate to the next (newer) history entry."
@@ -211,10 +214,10 @@ Works backwards from the end of the offsets vector."
         (insert (or (le::cci--state-saved-input st) ""))))
      (t
       (cl-decf (le::cci--state-position st))
-      (let* ((hist (le::cci--effective-history st))
-             (inhibit-read-only t))
+      (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (nth (le::cci--state-position st) hist)))))))
+        (insert (nth (le::cci--state-position st)
+                     (le::cci--state-history st))))))))
 
 ;;;; Major mode
 
@@ -256,19 +259,17 @@ Works backwards from the end of the offsets vector."
 (defun le::cci--history-init (project-root)
   "Initialize history state for the current prompt buffer.
 PROJECT-ROOT is the project directory to find session history for.
-JSONL positions are authoritative; ring-only entries appear at the front."
-  (let* ((root (expand-file-name project-root))
-         (file (le::cci--session-jsonl-file root))
-         (seen (make-hash-table :test 'equal))
-         (ring (gethash root le::cci--prompt-rings)))
+Loads the first JSONL batch, then merges ring entries that are newer
+than the first sync point."
+  (let ((root (expand-file-name project-root)))
     (setf (le::cci--state-project-root le::cci--st) root)
-    (setf (le::cci--state-jsonl-seen le::cci--st) seen)
-    (setf (le::cci--state-ring le::cci--st) ring)
-    (when file
-      (setf (le::cci--state-file le::cci--st) file)
-      (setf (le::cci--state-offsets le::cci--st)
-            (le::cci--scan-message-offsets file))
-      (le::cci--load-history-batch))))
+    (let ((file (le::cci--session-jsonl-file root)))
+      (when file
+        (setf (le::cci--state-file le::cci--st) file)
+        (setf (le::cci--state-offsets le::cci--st)
+              (le::cci--scan-message-offsets file))
+        (le::cci--load-history-batch)))
+    (le::cci--merge-ring le::cci--st)))
 
 ;;;; Main entry point
 
