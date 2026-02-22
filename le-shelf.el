@@ -5,7 +5,7 @@
 ;; Author: Le Wang
 ;; Keywords: miscellaneous
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (popper "0.1") (claude-code-ide "0.1"))
 
 ;; This file is not part of GNU Emacs.
 
