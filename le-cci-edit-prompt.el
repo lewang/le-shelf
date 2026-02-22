@@ -61,12 +61,12 @@ Replaces / and . with -."
   "Return the JSONL file for the active Claude Code session at PROJECT-ROOT.
 Looks up the session ID from `claude-code-ide--session-ids'."
   (let ((project-root (expand-file-name project-root)))
-  (when-let* ((session-id (gethash project-root claude-code-ide--session-ids))
-              (key (le::cci--project-key project-root))
-              (file (expand-file-name
-                     (concat session-id ".jsonl")
-                     (expand-file-name key "~/.claude/projects/"))))
-    (when (file-exists-p file) file))))
+    (when-let* ((session-id (gethash project-root claude-code-ide--session-ids))
+                (key (le::cci--project-key project-root))
+                (file (expand-file-name
+                       (concat session-id ".jsonl")
+                       (expand-file-name key "~/.claude/projects/"))))
+      (when (file-exists-p file) file))))
 
 ;;;; Byte-offset scanning
 
@@ -279,9 +279,7 @@ than the first sync point."
 If the prompt buffer already exists, toggle voice recording in it.
 M-p/M-n traverse history from the latest session.  C-c C-c finishes."
   (interactive)
-  (let* ((root (or (when-let* ((proj (project-current)))
-                     (project-root proj))
-                   default-directory))
+  (let* ((root (claude-code-ide--get-working-directory))
          (short-root (abbreviate-file-name (directory-file-name root)))
          (buf-name (format "*cci-prompt: %s*" short-root))
          (existing (get-buffer buf-name)))
