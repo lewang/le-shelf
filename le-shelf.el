@@ -72,4 +72,13 @@ Approprfiate for use as `forward-sentence-function'"
                           list))))))
 
 
+;;;###autoload
+(defun le::paredit-RET ()
+  "paredit hack needed for 27 beta
+     Wraps `paredit-RET' to provide a sensible minibuffer experience."
+  (interactive)
+  (cond ((minibufferp) (call-interactively 'read--expression-try-read))
+        ((memq major-mode '(cider-repl-mode)) (call-interactively 'cider-repl-return))
+        ((call-interactively 'paredit-RET))))
+
 (provide 'le-shelf)
