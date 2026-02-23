@@ -221,30 +221,31 @@ Two layout strategies:
                                              recentf-list)))
                             (find-file-noselect file))
                           (dired-noselect project-root))))
-    (message "ide-reset: project-root=%s project-buf=%s" project-root project-buf)
+    (when le::debug
+      (message "ide-reset: project-root=%s project-buf=%s" project-root project-buf))
     ;; prepare layout
     (if-let* ((layout (le::ide--compatible-layout)))
         (progn
-          (message "ide-reset: compatible layout, selecting top-left")
+          (when le::debug (message "ide-reset: compatible layout, selecting top-left"))
           (select-window (plist-get layout :top-left)))
-      (message "ide-reset: incompatible layout, delete-other-windows")
+      (when le::debug (message "ide-reset: incompatible layout, delete-other-windows"))
       (delete-other-windows
        (cl-find-if-not #'window-dedicated-p (window-list))))
-    (message "ide-reset: switch-to-buffer %s" project-buf)
+    (when le::debug (message "ide-reset: switch-to-buffer %s" project-buf))
     (switch-to-buffer project-buf nil t)
     ;; now display-buffer-alist takes over
-    (message "ide-reset: starting claude-code-ide")
+    (when le::debug (message "ide-reset: starting claude-code-ide"))
     (save-selected-window
       (let ((default-directory project-root))
         (condition-case nil
             (claude-code-ide-switch-to-buffer)
           (user-error (claude-code-ide)))))
-    (message "ide-reset: starting magit-status-noselect")
+    (when le::debug (message "ide-reset: starting magit-status-noselect"))
     (le::magit-status-noselect project-root)
     ;; final adjustments
-    (message "ide-reset: adjusting window sizes")
+    (when le::debug (message "ide-reset: adjusting window sizes"))
     (le::ide--adjust-windows (le::ide--compatible-layout))
-    (message "ide-reset: done")))
+    (when le::debug (message "ide-reset: done"))))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
