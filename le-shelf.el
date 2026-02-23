@@ -15,9 +15,6 @@
 
 ;;; Code:
 
-(defvar le::debug nil
-  "When non-nil, enable verbose debug messages in le-shelf functions.")
-
 ;;;###autoload
 (defun le-cycle-spacing (arg)
   (interactive "*P")

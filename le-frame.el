@@ -221,31 +221,30 @@ Two layout strategies:
                                              recentf-list)))
                             (find-file-noselect file))
                           (dired-noselect project-root))))
-    (when le::debug
-      (message "ide-reset: project-root=%s project-buf=%s" project-root project-buf))
+    (le::debug-message "ide-reset: project-root=%s project-buf=%s" project-root project-buf)
     ;; prepare layout
     (if-let* ((layout (le::ide--compatible-layout)))
         (progn
-          (when le::debug (message "ide-reset: compatible layout, selecting top-left"))
+          (le::debug-message "ide-reset: compatible layout, selecting top-left")
           (select-window (plist-get layout :top-left)))
-      (when le::debug (message "ide-reset: incompatible layout, delete-other-windows"))
+      (le::debug-message "ide-reset: incompatible layout, delete-other-windows")
       (delete-other-windows
        (cl-find-if-not #'window-dedicated-p (window-list))))
-    (when le::debug (message "ide-reset: switch-to-buffer %s" project-buf))
+    (le::debug-message "ide-reset: switch-to-buffer %s" project-buf)
     (switch-to-buffer project-buf nil t)
     ;; now display-buffer-alist takes over
-    (when le::debug (message "ide-reset: starting claude-code-ide"))
+    (le::debug-message "ide-reset: starting claude-code-ide")
     (save-selected-window
       (let ((default-directory project-root))
         (condition-case nil
             (claude-code-ide-switch-to-buffer)
           (user-error (claude-code-ide)))))
-    (when le::debug (message "ide-reset: starting magit-status-noselect"))
+    (le::debug-message "ide-reset: starting magit-status-noselect")
     (le::magit-status-noselect project-root)
     ;; final adjustments
-    (when le::debug (message "ide-reset: adjusting window sizes"))
+    (le::debug-message "ide-reset: adjusting window sizes")
     (le::ide--adjust-windows (le::ide--compatible-layout))
-    (when le::debug (message "ide-reset: done"))))
+    (le::debug-message "ide-reset: done")))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
