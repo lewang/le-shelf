@@ -15,6 +15,8 @@
 
 ;;; Code:
 
+(require 'project)
+
 ;;;###autoload
 (defun le::cape-dabbrev-buffers ()
   "Return buffers for cape-dabbrev: same project root or same major mode.

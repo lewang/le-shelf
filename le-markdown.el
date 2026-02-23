@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'yasnippet)
 
 (cl-defun yas-generate-sandwich (&key prefix (chunk-end (point-max)) suffix (suffix-force-newline t))
   "Generate a snippet that wraps buffer text from point to CHUNK-END.
