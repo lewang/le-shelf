@@ -347,18 +347,22 @@ M-p/M-n traverse history from the latest session.  C-c C-c finishes."
   (interactive)
   (let* ((root (claude-code-ide--get-working-directory))
          (short-root (abbreviate-file-name (directory-file-name root)))
-         (buf (generate-new-buffer (format "*cci-prompt: %s*" short-root))))
-    (with-current-buffer buf
-      (le::cci-prompt-mode)
-      (setq le::cci--st
-            (make-le::cci--state
-             :saved-winconf (current-window-configuration)
-             :finish-callback (lambda (text)
-                                (claude-code-ide-send-prompt text))))
-      (setq header-line-format
-            (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root))
-      (le::cci--history-init root)
-      (pop-to-buffer (current-buffer)))))
+         (buf-name (format "*cci-prompt: %s*" short-root))
+         (existing (get-buffer buf-name)))
+    (if existing
+        (pop-to-buffer existing)
+      (let ((buf (generate-new-buffer buf-name)))
+        (with-current-buffer buf
+          (le::cci-prompt-mode)
+          (setq le::cci--st
+                (make-le::cci--state
+                 :saved-winconf (current-window-configuration)
+                 :finish-callback (lambda (text)
+                                    (claude-code-ide-send-prompt text))))
+          (setq header-line-format
+                (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root))
+          (le::cci--history-init root)
+          (pop-to-buffer (current-buffer)))))))
 
 (provide 'le-cci-edit-prompt)
 ;;; le-cci-edit-prompt.el ends here
