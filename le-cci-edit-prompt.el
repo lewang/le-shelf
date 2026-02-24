@@ -5,16 +5,17 @@
 ;; M-p/M-n traverse history from the latest session JSONL file,
 ;; lazy-loading in batches of 5.  C-c C-c to accept, C-c C-k to cancel.
 ;;
-;; Prompts entered via C-c C-c are also saved to a per-project ring,
-;; so they survive even if Claude Code never registered them.
-;;
-;; History merge: the first JSONL batch is compared against the ring.
-;; Ring entries newer than the first sync point (match) are prepended.
+;; Prompts entered via C-c C-c are saved to a per-project ring as
+;; (TIMESTAMP . TEXT) cons cells.  JSONL entries also carry timestamps.
+;; History is a timestamp-based merge sort of both sources with dedup.
+;; The ring acts as a write-ahead buffer; entries confirmed in JSONL
+;; are lazily purged during merge.
 
 ;;; Code:
 
 (require 'json)
 (require 'cl-lib)
+(require 'time-date)
 
 ;;;; Session ID stack (set as buffer-local in cci vterm buffers)
 
@@ -44,31 +45,40 @@ Called by the SessionStart hook via emacsclient."
 ;;;; Per-project prompt ring (global, not buffer-local)
 
 (defvar le::cci--prompt-rings (make-hash-table :test 'equal)
-  "Hash table mapping expanded project roots to lists of prompt strings.
-Most recent first.  These are prompts entered via C-c C-c.")
+  "Hash table mapping expanded project roots to lists of (TIMESTAMP . TEXT) cons cells.
+Most recent first.  These are prompts entered via C-c C-c.
+Timestamps are integer seconds from `float-time'.")
+
+(defvar le::cci--prompt-ring-max-size 100
+  "Maximum number of entries per project in the prompt ring.")
 
 (defun le::cci--ring-push (project-root text)
-  "Push TEXT onto the prompt ring for PROJECT-ROOT.
+  "Push TEXT onto the prompt ring for PROJECT-ROOT with current timestamp.
 Deduplicates: if TEXT is already the most recent entry, skip."
   (let* ((key (expand-file-name project-root))
          (ring (gethash key le::cci--prompt-rings)))
-    (unless (equal text (car ring))
-      (puthash key (cons text ring) le::cci--prompt-rings))))
+    (unless (equal text (cdr-safe (car ring)))
+      (let ((new-ring (cons (cons (floor (float-time)) text) ring)))
+        (when (> (length new-ring) le::cci--prompt-ring-max-size)
+          (setcdr (nthcdr (1- le::cci--prompt-ring-max-size) new-ring) nil))
+        (puthash key new-ring le::cci--prompt-rings)))))
 
 ;;;; Buffer-local state
 
 (cl-defstruct (le::cci--state (:copier nil))
   "State for a CCI prompt buffer."
   (project-root nil :documentation "Expanded project root for this prompt.")
-  (history nil :documentation "Merged history, most recent first.")
+  (history nil :documentation "Merged history as (TIMESTAMP . TEXT) cons cells, most recent first.")
   (position nil :documentation "Current index into history, or nil.")
   (saved-input nil :documentation "Buffer contents saved before history navigation.")
+  (ring-index 0 :documentation "How far into the prompt ring we've merged.")
   (files nil :documentation "List of JSONL files, most recent first.")
   (file-index 0 :documentation "Index into files list (current file being read).")
   (offsets nil :documentation "Vector of byte offsets for current file (oldest first).")
   (loaded-count 0 :documentation "Entries loaded from current file's offsets.")
   (finish-callback nil :documentation "Function called with buffer text on C-c C-c.")
-  (saved-winconf nil :documentation "Window configuration saved before prompt buffer."))
+  (saved-winconf nil :documentation "Window configuration saved before prompt buffer.")
+  (header-line-default nil :documentation "Original header-line-format for restoration."))
 
 (defvar-local le::cci--st nil
   "Prompt buffer state, a `le::cci--state' struct.")
@@ -122,33 +132,41 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
         (let* ((bol (line-beginning-position))
                (eol (line-end-position))
                (line (buffer-substring-no-properties bol eol)))
-          (when (le::cci--extract-message-text line)
+          (when (le::cci--extract-message-entry line)
             (push (1- (position-bytes bol)) offsets)))
         (forward-line 1)))
     (vconcat (nreverse offsets))))
 
-;;;; Extract message text from a single JSONL line
+;;;; Extract message entry from a single JSONL line
 
-(defun le::cci--extract-message-text (line)
-  "Parse a JSONL LINE and extract the user message text, or nil."
+(defun le::cci--extract-message-entry (line)
+  "Parse a JSONL LINE and extract (TIMESTAMP . TEXT) for user messages, or nil.
+TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
   (let ((obj (ignore-errors (json-parse-string line :object-type 'alist))))
     (when (and obj (equal (alist-get 'type obj) "user"))
       (let* ((message (alist-get 'message obj))
-             (content (alist-get 'content message)))
-        (cond
-         ((stringp content)
-          (let ((trimmed (string-trim content)))
-            (unless (string-empty-p trimmed) trimmed)))
-         ((vectorp content)
-          (let ((text (string-trim
-                       (mapconcat
-                        (lambda (block)
-                          (if (and (equal (alist-get 'type block) "text")
-                                   (alist-get 'text block))
-                              (alist-get 'text block)
-                            ""))
-                        content " "))))
-            (unless (string-empty-p text) text))))))))
+             (content (alist-get 'content message))
+             (ts-str (alist-get 'timestamp obj))
+             (timestamp (if ts-str
+                            (floor (float-time (date-to-time ts-str)))
+                          0))
+             (text
+              (cond
+               ((stringp content)
+                (let ((trimmed (string-trim content)))
+                  (unless (string-empty-p trimmed) trimmed)))
+               ((vectorp content)
+                (let ((t2 (string-trim
+                           (mapconcat
+                            (lambda (block)
+                              (if (and (equal (alist-get 'type block) "text")
+                                       (alist-get 'text block))
+                                  (alist-get 'text block)
+                                ""))
+                            content " "))))
+                  (unless (string-empty-p t2) t2))))))
+        (when text
+          (cons timestamp text))))))
 
 ;;;; Lazy batch loading
 
@@ -202,9 +220,9 @@ When current file is exhausted, advances to the next file in the stack."
                          (line (decode-coding-string
                                 (buffer-substring-no-properties (point-min) eol)
                                 'utf-8))
-                         (text (le::cci--extract-message-text line)))
-                    (when text
-                      (push text new-entries)))))))
+                         (entry (le::cci--extract-message-entry line)))
+                    (when entry
+                      (push entry new-entries)))))))
           (setf (le::cci--state-history st)
                 (append (le::cci--state-history st) new-entries))
           (cl-incf (le::cci--state-loaded-count st) batch-size))))))
@@ -219,27 +237,78 @@ Checks both current file and remaining files in the stack."
         (< (1+ (le::cci--state-file-index st))
            (length (le::cci--state-files st))))))
 
-;;;; Ring merge
+;;;; Ring merge (timestamp-based merge-sort with dedup)
 
 (defun le::cci--merge-ring (st)
-  "Prepend ring-only entries that are newer than the first JSONL match.
-Walk the ring most-recent-first; stop at the first entry found in
-the JSONL batch.  Everything before that sync point is a missed
-prompt that gets prepended to history."
+  "Merge ring entries into history using timestamp-based merge sort.
+Both ring and history (JSONL) are newest-first lists of (TIMESTAMP . TEXT).
+Deduplicates: entries with identical text within 60s are considered the same;
+the JSONL version is kept and the ring entry is purged.
+
+Updates `ring-index' in ST to track merge progress for lazy loading."
   (let* ((root (le::cci--state-project-root st))
          (ring (gethash root le::cci--prompt-rings))
-         (jsonl-set (let ((ht (make-hash-table :test 'equal)))
-                      (dolist (h (le::cci--state-history st) ht)
-                        (puthash h t ht))))
-         pre)
-    (cl-loop for entry in ring
-             if (gethash entry jsonl-set) return nil
-             do (push entry pre))
-    (when pre
-      (setf (le::cci--state-history st)
-            (append (nreverse pre) (le::cci--state-history st))))))
+         (ring-entries (nthcdr (le::cci--state-ring-index st) ring))
+         (jsonl (le::cci--state-history st))
+         (purged nil)
+         result)
+    ;; Two-pointer merge, both newest-first
+    (while (or ring-entries jsonl)
+      (cond
+       ;; Both have entries — check for dedup then take the newer one
+       ((and ring-entries jsonl)
+        (let ((r-ts (car (car ring-entries)))
+              (r-text (cdr (car ring-entries)))
+              (j-ts (car (car jsonl)))
+              (j-text (cdr (car jsonl))))
+          (if (and (equal r-text j-text)
+                   (<= (abs (- r-ts j-ts)) 60))
+              ;; Duplicate — keep JSONL version, mark ring entry for purge
+              (progn
+                (push (car ring-entries) purged)
+                (push (car jsonl) result)
+                (setq ring-entries (cdr ring-entries))
+                (setq jsonl (cdr jsonl)))
+            ;; Not a duplicate — take the newer one
+            (if (>= r-ts j-ts)
+                (progn
+                  (push (car ring-entries) result)
+                  (setq ring-entries (cdr ring-entries)))
+              (push (car jsonl) result)
+              (setq jsonl (cdr jsonl))))))
+       ;; Only ring entries left
+       (ring-entries
+        (push (car ring-entries) result)
+        (setq ring-entries (cdr ring-entries)))
+       ;; Only JSONL entries left
+       (t
+        (push (car jsonl) result)
+        (setq jsonl (cdr jsonl)))))
+    (setf (le::cci--state-history st) (nreverse result))
+    (setf (le::cci--state-ring-index st)
+          (length (gethash root le::cci--prompt-rings)))
+    ;; Lazy purge: remove matched ring entries
+    (when purged
+      (let ((ring-list (gethash root le::cci--prompt-rings)))
+        (dolist (entry purged)
+          (setq ring-list (delq entry ring-list)))
+        (puthash root ring-list le::cci--prompt-rings)))))
 
 ;;;; History navigation commands
+
+(defun le::cci--update-header-for-history (st)
+  "Update header line to show position and relative timestamp."
+  (let* ((pos (le::cci--state-position st))
+         (entry (nth pos (le::cci--state-history st)))
+         (timestamp (car entry)))
+    (setq header-line-format
+          (format " History [%d] %s ago    (M-p older, M-n newer, C-c C-k cancel)"
+                  (1+ pos)
+                  (seconds-to-string (- (float-time) timestamp) 'expanded 'abbrev)))))
+
+(defun le::cci--restore-header (st)
+  "Restore the original header line."
+  (setq header-line-format (le::cci--state-header-line-default st)))
 
 (defun le::cci-history-previous ()
   "Navigate to the previous (older) history entry."
@@ -261,10 +330,12 @@ prompt that gets prepended to history."
               (setf (le::cci--state-position st) nil)
             (cl-decf (le::cci--state-position st)))
           (message "End of history"))
-      (let ((inhibit-read-only t))
+      (let* ((inhibit-read-only t)
+             (entry (nth (le::cci--state-position st)
+                         (le::cci--state-history st))))
         (erase-buffer)
-        (insert (nth (le::cci--state-position st)
-                     (le::cci--state-history st)))))))
+        (insert (cdr entry))
+        (le::cci--update-header-for-history st)))))
 
 (defun le::cci-history-next ()
   "Navigate to the next (newer) history entry."
@@ -277,13 +348,16 @@ prompt that gets prepended to history."
       (setf (le::cci--state-position st) nil)
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (or (le::cci--state-saved-input st) ""))))
+        (insert (or (le::cci--state-saved-input st) "")))
+      (le::cci--restore-header st))
      (t
       (cl-decf (le::cci--state-position st))
-      (let ((inhibit-read-only t))
+      (let* ((inhibit-read-only t)
+             (entry (nth (le::cci--state-position st)
+                         (le::cci--state-history st))))
         (erase-buffer)
-        (insert (nth (le::cci--state-position st)
-                     (le::cci--state-history st))))))))
+        (insert (cdr entry))
+        (le::cci--update-header-for-history st))))))
 
 ;;;; Major mode
 
@@ -354,13 +428,14 @@ M-p/M-n traverse history from the latest session.  C-c C-c finishes."
       (let ((buf (generate-new-buffer buf-name)))
         (with-current-buffer buf
           (le::cci-prompt-mode)
-          (setq le::cci--st
-                (make-le::cci--state
-                 :saved-winconf (current-window-configuration)
-                 :finish-callback (lambda (text)
-                                    (claude-code-ide-send-prompt text))))
-          (setq header-line-format
-                (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root))
+          (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root)))
+            (setq le::cci--st
+                  (make-le::cci--state
+                   :saved-winconf (current-window-configuration)
+                   :finish-callback (lambda (text)
+                                      (claude-code-ide-send-prompt text))
+                   :header-line-default hdr))
+            (setq header-line-format hdr))
           (le::cci--history-init root)
           (pop-to-buffer (current-buffer)))))))
 
