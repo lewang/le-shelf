@@ -16,6 +16,31 @@
 (require 'json)
 (require 'cl-lib)
 
+;;;; Session ID stack (set as buffer-local in cci vterm buffers)
+
+(defvar-local le::cci--session-id-stack nil
+  "Stack of Claude CLI session IDs, most recent first.
+Populated by SessionStart hook via emacsclient.
+Set in the cci vterm buffer, not the prompt buffer.")
+
+(defvar claude-code-ide-mcp-server--sessions)
+(defvar claude-code-ide--routing-token)
+(defvar claude-code-ide--routing-tokens)
+
+(defun le::cci--register-session-id (routing-token session-id)
+  "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
+Returns non-nil on success, nil if no matching buffer found.
+Called by the SessionStart hook via emacsclient."
+  (if-let* ((session (gethash routing-token claude-code-ide-mcp-server--sessions))
+            (buf (plist-get session :buffer))
+            ((buffer-live-p buf)))
+      (with-current-buffer buf
+        (unless (equal session-id (car le::cci--session-id-stack))
+          (push session-id le::cci--session-id-stack))
+        t)
+    (message "le::cci--register-session-id: no buffer for routing token %s" routing-token)
+    nil))
+
 ;;;; Per-project prompt ring (global, not buffer-local)
 
 (defvar le::cci--prompt-rings (make-hash-table :test 'equal)
@@ -38,9 +63,10 @@ Deduplicates: if TEXT is already the most recent entry, skip."
   (history nil :documentation "Merged history, most recent first.")
   (position nil :documentation "Current index into history, or nil.")
   (saved-input nil :documentation "Buffer contents saved before history navigation.")
-  (offsets nil :documentation "Vector of byte offsets for user messages (oldest first).")
-  (loaded-count 0 :documentation "How many entries from the end of offsets have been loaded.")
-  (file nil :documentation "Path to the JSONL session file.")
+  (files nil :documentation "List of JSONL files, most recent first.")
+  (file-index 0 :documentation "Index into files list (current file being read).")
+  (offsets nil :documentation "Vector of byte offsets for current file (oldest first).")
+  (loaded-count 0 :documentation "Entries loaded from current file's offsets.")
   (finish-callback nil :documentation "Function called with buffer text on C-c C-c.")
   (saved-winconf nil :documentation "Window configuration saved before prompt buffer."))
 
@@ -57,16 +83,31 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 Replaces / and . with -."
   (replace-regexp-in-string "[/.]" "-" (directory-file-name (expand-file-name project-root))))
 
-(defun le::cci--session-jsonl-file (project-root)
-  "Return the JSONL file for the active Claude Code session at PROJECT-ROOT.
-Looks up the session ID from `claude-code-ide--session-ids'."
+(defun le::cci--session-jsonl-files (project-root)
+  "Return list of JSONL files for the active Claude Code session, most recent first.
+Reads the session ID stack from the cci vterm buffer for PROJECT-ROOT."
+  (let* ((project-root (expand-file-name project-root))
+         (key (le::cci--project-key project-root))
+         (projects-dir (expand-file-name key "~/.claude/projects/"))
+         (stack (le::cci--get-session-id-stack project-root)))
+    (delq nil
+          (mapcar (lambda (session-id)
+                    (let ((file (expand-file-name (concat session-id ".jsonl") projects-dir)))
+                      (when (file-exists-p file) file)))
+                  stack))))
+
+(defun le::cci--get-session-id-stack (project-root)
+  "Get the session ID stack from the cci vterm buffer for PROJECT-ROOT."
   (let ((project-root (expand-file-name project-root)))
-    (when-let* ((session-id (gethash project-root claude-code-ide--session-ids))
-                (key (le::cci--project-key project-root))
-                (file (expand-file-name
-                       (concat session-id ".jsonl")
-                       (expand-file-name key "~/.claude/projects/"))))
-      (when (file-exists-p file) file))))
+    (catch 'found
+      (maphash (lambda (routing-token _)
+                 (when-let* ((session (gethash routing-token claude-code-ide-mcp-server--sessions))
+                             (buf (plist-get session :buffer))
+                             ((buffer-live-p buf))
+                             ((string= (expand-file-name (plist-get session :project-dir))
+                                       project-root)))
+                   (throw 'found (buffer-local-value 'le::cci--session-id-stack buf))))
+               claude-code-ide--routing-tokens))))
 
 ;;;; Byte-offset scanning
 
@@ -111,12 +152,34 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
 
 ;;;; Lazy batch loading
 
+(defun le::cci--current-file (st)
+  "Return the current JSONL file for state ST, or nil."
+  (nth (le::cci--state-file-index st) (le::cci--state-files st)))
+
+(defun le::cci--advance-to-next-file (st)
+  "Move ST to the next JSONL file in the stack.
+Returns non-nil if a next file was available and its offsets were scanned."
+  (let ((next-idx (1+ (le::cci--state-file-index st))))
+    (when (< next-idx (length (le::cci--state-files st)))
+      (setf (le::cci--state-file-index st) next-idx)
+      (setf (le::cci--state-loaded-count st) 0)
+      (setf (le::cci--state-offsets st)
+            (le::cci--scan-message-offsets (nth next-idx (le::cci--state-files st))))
+      t)))
+
 (defun le::cci--load-history-batch ()
   "Load the next batch of JSONL history entries.
-Works backwards from the end of the offsets vector."
+Works backwards from the end of the offsets vector.
+When current file is exhausted, advances to the next file in the stack."
   (let* ((st le::cci--st)
-         (file (le::cci--state-file st))
+         (file (le::cci--current-file st))
          (offsets (le::cci--state-offsets st)))
+    ;; If current file exhausted, try next
+    (when (and file offsets
+               (>= (le::cci--state-loaded-count st) (length offsets)))
+      (when (le::cci--advance-to-next-file st)
+        (setq file (le::cci--current-file st))
+        (setq offsets (le::cci--state-offsets st))))
     (when (and file offsets)
       (let* ((total (length offsets))
              (already (le::cci--state-loaded-count st))
@@ -147,11 +210,14 @@ Works backwards from the end of the offsets vector."
           (cl-incf (le::cci--state-loaded-count st) batch-size))))))
 
 (defun le::cci--history-can-load-more-p ()
-  "Return non-nil if more history batches can be loaded."
+  "Return non-nil if more history batches can be loaded.
+Checks both current file and remaining files in the stack."
   (let ((st le::cci--st))
-    (and (le::cci--state-offsets st)
-         (< (le::cci--state-loaded-count st)
-            (length (le::cci--state-offsets st))))))
+    (or (and (le::cci--state-offsets st)
+             (< (le::cci--state-loaded-count st)
+                (length (le::cci--state-offsets st))))
+        (< (1+ (le::cci--state-file-index st))
+           (length (le::cci--state-files st))))))
 
 ;;;; Ring merge
 
@@ -259,15 +325,16 @@ prompt that gets prepended to history."
 (defun le::cci--history-init (project-root)
   "Initialize history state for the current prompt buffer.
 PROJECT-ROOT is the project directory to find session history for.
-Loads the first JSONL batch, then merges ring entries that are newer
-than the first sync point."
+Loads the first JSONL batch from the most recent session file,
+then merges ring entries that are newer than the first sync point."
   (let ((root (expand-file-name project-root)))
     (setf (le::cci--state-project-root le::cci--st) root)
-    (let ((file (le::cci--session-jsonl-file root)))
-      (when file
-        (setf (le::cci--state-file le::cci--st) file)
+    (let ((files (le::cci--session-jsonl-files root)))
+      (when files
+        (setf (le::cci--state-files le::cci--st) files)
+        (setf (le::cci--state-file-index le::cci--st) 0)
         (setf (le::cci--state-offsets le::cci--st)
-              (le::cci--scan-message-offsets file))
+              (le::cci--scan-message-offsets (car files)))
         (le::cci--load-history-batch)))
     (le::cci--merge-ring le::cci--st)))
 
