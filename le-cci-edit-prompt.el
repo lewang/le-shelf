@@ -97,15 +97,15 @@ Reads the session ID stack from the cci vterm buffer for PROJECT-ROOT."
                   stack))))
 
 (defun le::cci--get-session-id-stack (project-root)
-  "Get the session ID stack from the cci vterm buffer for PROJECT-ROOT."
+  "Get the session ID stack from the cci vterm buffer for PROJECT-ROOT.
+`claude-code-ide--routing-tokens' maps directory → routing-token."
   (let ((project-root (expand-file-name project-root)))
     (catch 'found
-      (maphash (lambda (routing-token _)
-                 (when-let* ((session (gethash routing-token claude-code-ide-mcp-server--sessions))
+      (maphash (lambda (dir routing-token)
+                 (when-let* (((string= (expand-file-name dir) project-root))
+                             (session (gethash routing-token claude-code-ide-mcp-server--sessions))
                              (buf (plist-get session :buffer))
-                             ((buffer-live-p buf))
-                             ((string= (expand-file-name (plist-get session :project-dir))
-                                       project-root)))
+                             ((buffer-live-p buf)))
                    (throw 'found (buffer-local-value 'le::cci--session-id-stack buf))))
                claude-code-ide--routing-tokens))))
 
