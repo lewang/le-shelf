@@ -45,5 +45,81 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
                              (file-name-nondirectory (buffer-file-name))))
     (add-hook 'server-done-hook 'le::server-focus-on-claude-code-ide-on-exit nil t)))
 
+;;; Tab bar status indicators for Claude Code sessions
+
+(defvar le::cci-tab-pending-indicator "⚡ "
+  "String prepended to tab name when input is pending.")
+
+(defvar le::cci-tab-finished-indicator "✅ "
+  "String prepended to tab name when Claude has finished.")
+
+(declare-function w--find-workspace-for-root "w" (root))
+(declare-function w--find-tab "w" (name))
+(declare-function w--find-workspace "w" (name))
+
+(defun le::cci-tab--find-tab (project-dir)
+  "Find the tab and frame for PROJECT-DIR via w workspace.
+Returns (TAB . FRAME) or nil."
+  (when (fboundp 'w--find-workspace-for-root)
+    (when-let* ((ws (w--find-workspace-for-root project-dir))
+                (name (plist-get ws :name)))
+      (w--find-tab name))))
+
+(defun le::cci-tab--set-indicator (project-dir indicator)
+  "Set INDICATOR prefix on the tab for PROJECT-DIR.
+INDICATOR is a string prefix, or nil to clear."
+  (when-let* ((found (le::cci-tab--find-tab project-dir))
+              (tab (car found))
+              (frame (cdr found)))
+    (let* ((current-name (alist-get 'name (cdr tab)))
+           (clean-name current-name))
+      ;; Strip any existing indicator
+      (dolist (prefix (list le::cci-tab-pending-indicator
+                            le::cci-tab-finished-indicator))
+        (when (string-prefix-p prefix clean-name)
+          (setq clean-name (substring clean-name (length prefix)))))
+      ;; Build new name
+      (let ((new-name (if indicator (concat indicator clean-name) clean-name)))
+        (unless (string= current-name new-name)
+          (let* ((tabs (funcall tab-bar-tabs-function frame))
+                 (idx (1+ (seq-position tabs tab #'eq))))
+            (with-selected-frame frame
+              (tab-bar-rename-tab new-name idx)))
+          (force-mode-line-update t))))))
+
+;;; Public API (called from hook scripts via emacsclient --eval)
+
+;;;###autoload
+(defun le::cci-tab-input-pending (project-dir)
+  "Mark the tab for PROJECT-DIR as needing user input."
+  (le::cci-tab--set-indicator project-dir le::cci-tab-pending-indicator))
+
+;;;###autoload
+(defun le::cci-tab-finished (project-dir)
+  "Mark the tab for PROJECT-DIR as finished."
+  (le::cci-tab--set-indicator project-dir le::cci-tab-finished-indicator))
+
+;;;###autoload
+(defun le::cci-tab-clear (project-dir)
+  "Clear any indicator from the tab for PROJECT-DIR."
+  (le::cci-tab--set-indicator project-dir nil))
+
+;;; Auto-dismiss finished indicator on tab select
+
+(defun le::cci-tab--on-tab-select (_prev-tab new-tab)
+  "Clear finished indicator when user selects a tab.
+Does NOT clear pending indicator — only Stop hook clears that."
+  (when-let* ((name (alist-get 'name (cdr new-tab)))
+              ((string-prefix-p le::cci-tab-finished-indicator name))
+              (ws-name (alist-get 'w-workspace (cdr new-tab))))
+    (when-let* ((ws (w--find-workspace ws-name))
+                (project-dir (plist-get ws :project-root)))
+      (le::cci-tab-clear project-dir))))
+
+;;;###autoload
+(defun le::cci-tab-status-setup ()
+  "Enable tab bar status indicators for Claude Code sessions."
+  (add-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select))
+
 (provide 'le-cci)
 ;;; le-cci.el ends here
