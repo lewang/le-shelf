@@ -26,7 +26,7 @@
 (defun le::server-focus-on-claude-code-ide-on-exit ()
   "Focus on the vterm window after server-done.
 Used as a `server-done-hook' to return to the CCI terminal."
-  (when-let ((vterm-window
+  (when-let* ((vterm-window
               (get-window-with-predicate
                (lambda (window)
                  (with-current-buffer (window-buffer window)
