@@ -5,7 +5,7 @@
 ;; Author: Le Wang <lewang.dev.26@gmail.com>
 ;; Keywords: convenience
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1") (elpaca "0.0.2"))
+;; Package-Requires: ((emacs "29.1") (elpaca "0.0.2") (once "0.1"))
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -31,6 +31,7 @@
 ;;; Code:
 
 (require 'elpaca)
+(require 'once)
 
 (defun le-elpaca--dir-mtime (dir)
   "Return modification time of DIR as a time value, or nil if DIR doesn't exist."
@@ -94,6 +95,20 @@ A package is stale if either:
         (message "All elpaca packages up to date")
       (message "Rebuilding stale packages: %s"
                (mapconcat #'symbol-name stale ", "))
+      (once-hook 'elpaca-post-queue-hook
+                 (lambda ()
+                   (let (finished failed)
+                     (dolist (id stale)
+                       (pcase (elpaca--status (cdr (assoc id (elpaca--queued))))
+                         ('finished (push id finished))
+                         ('failed (push id failed))))
+                     (message "Elpaca rebuild: %d finished%s"
+                              (length finished)
+                              (if failed
+                                  (format ", %d FAILED: %s"
+                                          (length failed)
+                                          (mapconcat #'symbol-name (nreverse failed) ", "))
+                                "")))))
       (dolist (id stale)
         (elpaca-rebuild id))
       (elpaca-process-queues))))
