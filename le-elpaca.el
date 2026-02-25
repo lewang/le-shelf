@@ -5,7 +5,7 @@
 ;; Author: Le Wang <lewang.dev.26@gmail.com>
 ;; Keywords: convenience
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (elpaca "0.0.2"))
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -30,12 +30,7 @@
 
 ;;; Code:
 
-(declare-function elpaca--queued "elpaca")
-(declare-function elpaca<-repo-dir "elpaca")
-(declare-function elpaca<-build-dir "elpaca")
-(declare-function elpaca<-id "elpaca")
-(declare-function elpaca-rebuild "elpaca")
-(declare-function elpaca-process-queues "elpaca")
+(require 'elpaca)
 
 (defun le-elpaca--dir-mtime (dir)
   "Return modification time of DIR as a time value, or nil if DIR doesn't exist."
