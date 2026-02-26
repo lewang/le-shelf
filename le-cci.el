@@ -107,19 +107,24 @@ INDICATOR is a string prefix, or nil to clear."
 ;;; Auto-dismiss finished indicator on tab select
 
 (defun le::cci-tab--on-tab-select (_prev-tab new-tab)
-  "Clear finished indicator when user selects a tab.
-Does NOT clear pending indicator — only Stop hook clears that."
+  "Clear any status indicator when user selects a tab."
   (when-let* ((name (alist-get 'name (cdr new-tab)))
-              ((string-prefix-p le::cci-tab-finished-indicator name))
+              ((or (string-prefix-p le::cci-tab-finished-indicator name)
+                   (string-prefix-p le::cci-tab-pending-indicator name)))
               (ws-name (alist-get 'w-workspace (cdr new-tab))))
     (when-let* ((ws (w--find-workspace ws-name))
                 (project-dir (plist-get ws :project-root)))
       (le::cci-tab-clear project-dir))))
 
 ;;;###autoload
-(defun le::cci-tab-status-setup ()
-  "Enable tab bar status indicators for Claude Code sessions."
-  (add-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select))
+(define-minor-mode le::cci-tab-status-mode
+  "Toggle tab bar status indicators for Claude Code sessions.
+When enabled, selecting a tab clears its ⚡/✅ indicator."
+  :global t
+  :group 'le-cci
+  (if le::cci-tab-status-mode
+      (add-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)
+    (remove-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)))
 
 (provide 'le-cci)
 ;;; le-cci.el ends here
