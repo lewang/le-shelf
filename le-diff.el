@@ -22,8 +22,93 @@
 (declare-function diff-hunk-next "diff-mode")
 (declare-function smerge-find-conflict "smerge-mode")
 (declare-function smerge-refine "smerge-mode")
+(declare-function smerge-next "smerge-mode")
+(declare-function smerge-prev "smerge-mode")
+(declare-function smerge-ediff "smerge-mode")
 (declare-function magit-file-at-point "magit-diff")
 (declare-function magit-commit-at-point "magit-git")
+
+(defvar-local le::diff-smerge-file nil
+  "Source file path for the smerge view buffer.")
+
+(defvar-local le::diff-smerge-rev nil
+  "Git revision for the smerge view buffer, or nil for working tree.")
+
+(defun le::diff-smerge-goto-source (&optional use-rev)
+  "Jump to the corresponding line in the source file.
+With prefix arg USE-REV, open the exact commit revision instead
+of the working tree file."
+  (interactive "P")
+  (unless le::diff-smerge-file
+    (user-error "No source file recorded"))
+  (let ((target-line 0)
+        (in-modified nil))
+    (save-excursion
+      (let ((target (line-number-at-pos)))
+        (goto-char (point-min))
+        (dotimes (_ (1- target))
+          (let ((line (buffer-substring (line-beginning-position)
+                                       (line-end-position))))
+            (cond
+             ((string-prefix-p "<<<<<<< " line)
+              ;; Entering ORIGINAL section
+              (setq in-modified nil))
+             ((string-equal "=======" line)
+              ;; Entering MODIFIED section
+              (setq in-modified t))
+             ((string-prefix-p ">>>>>>> " line)
+              ;; End of conflict
+              (setq in-modified nil))
+             (in-modified
+              ;; Inside MODIFIED section — don't count
+              nil)
+             (t
+              ;; Normal line or ORIGINAL section line — counts
+              (cl-incf target-line))))
+          (forward-line 1))))
+    (cl-incf target-line) ; 1-based
+    (if (and use-rev le::diff-smerge-rev)
+        (let ((default-directory (file-name-directory le::diff-smerge-file))
+              (buf (generate-new-buffer
+                    (format "*%s:%s*"
+                            le::diff-smerge-rev
+                            (file-name-nondirectory le::diff-smerge-file)))))
+          (with-current-buffer buf
+            (call-process "git" nil t nil
+                          "show" (concat le::diff-smerge-rev ":"
+                                         (file-relative-name le::diff-smerge-file
+                                                             (magit-toplevel))))
+            (let ((buffer-file-name le::diff-smerge-file))
+              (delay-mode-hooks (set-auto-mode)))
+            (font-lock-mode 1)
+            (setq buffer-read-only t)
+            (goto-char (point-min))
+            (forward-line (1- target-line)))
+          (pop-to-buffer buf))
+      (let ((buf (find-file-other-window le::diff-smerge-file)))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (forward-line (1- target-line)))))))
+
+(defvar le::diff-smerge-view-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "q" #'quit-window)
+    (define-key map "n" #'smerge-next)
+    (define-key map "p" #'smerge-prev)
+    (define-key map (kbd "RET") #'le::diff-smerge-goto-source)
+    (define-key map "R" #'smerge-refine)
+    (define-key map "E" #'smerge-ediff)
+    map)
+  "Keymap for `le::diff-smerge-view-mode'.")
+
+(define-minor-mode le::diff-smerge-view-mode
+  "Read-only minor mode for smerge diff view buffers.
+Provides single-key navigation since the buffer is read-only."
+  :lighter " SmergeView"
+  :keymap le::diff-smerge-view-mode-map
+  (if le::diff-smerge-view-mode
+      (setq buffer-read-only t)
+    (setq buffer-read-only nil)))
 
 (defun le::diff--parse-hunk-changes (hunk-start hunk-end)
   "Parse unified diff lines between HUNK-START and HUNK-END.
@@ -87,10 +172,12 @@ Returns list of (OLD-START OLD-LEN CHANGES) in forward order."
     (or (nreverse hunks)
         (user-error "No hunks found"))))
 
-(defun le::diff--build-smerge-buffer (source-buf hunks buf-name)
+(defun le::diff--build-smerge-buffer (source-buf hunks buf-name file &optional rev)
   "Build a smerge buffer named BUF-NAME from SOURCE-BUF and HUNKS.
 SOURCE-BUF should contain the old (pre-diff) file content.
 HUNKS is a list from `le::diff--collect-hunks'.
+FILE is the absolute path to the source file.
+REV is the git revision, or nil for working tree diffs.
 Returns the smerge buffer."
   (let ((smerge-buf (generate-new-buffer buf-name))
         (src-line 1))
@@ -129,7 +216,10 @@ Returns the smerge buffer."
       (goto-char (point-min))
       (while (smerge-find-conflict)
         (smerge-refine))
-      (goto-char (point-min)))
+      (goto-char (point-min))
+      (setq-local le::diff-smerge-file file)
+      (setq-local le::diff-smerge-rev rev)
+      (le::diff-smerge-view-mode 1))
     smerge-buf))
 
 ;;;###autoload
@@ -144,12 +234,13 @@ Invoke from a `diff-mode' buffer."
   (interactive)
   (unless (derived-mode-p 'diff-mode)
     (user-error "Not in diff-mode"))
-  (let* ((file (diff-find-file-name nil t))
+  (let* ((file (expand-file-name (diff-find-file-name nil t)))
          (source-buf (find-file-noselect file))
          (hunks (le::diff--collect-hunks (current-buffer)))
          (smerge-buf (le::diff--build-smerge-buffer
                       source-buf hunks
-                      (format "*smerge:%s*" (file-name-nondirectory file)))))
+                      (format "*smerge:%s*" (file-name-nondirectory file))
+                      file)))
     (pop-to-buffer smerge-buf)))
 
 ;;;###autoload
@@ -189,11 +280,13 @@ Invoke from a `magit-revision-mode' or `magit-diff-mode' buffer."
             ;; Set major mode based on filename
             (let ((buffer-file-name (expand-file-name file)))
               (delay-mode-hooks (set-auto-mode))))
-          (let* ((hunks (le::diff--collect-hunks diff-buf))
+          (let* ((abs-file (expand-file-name file))
+                 (hunks (le::diff--collect-hunks diff-buf))
                  (smerge-buf (le::diff--build-smerge-buffer
                               source-buf hunks
                               (format "*smerge:%s*"
-                                      (file-name-nondirectory file)))))
+                                      (file-name-nondirectory file))
+                              abs-file rev)))
             (pop-to-buffer smerge-buf)))
       (kill-buffer diff-buf)
       (kill-buffer source-buf))))
