@@ -68,16 +68,16 @@ of the working tree file."
           (forward-line 1))))
     (cl-incf target-line) ; 1-based
     (if (and use-rev le::diff-smerge-rev)
-        (let ((default-directory (file-name-directory le::diff-smerge-file))
-              (buf (generate-new-buffer
-                    (format "*%s:%s*"
-                            le::diff-smerge-rev
-                            (file-name-nondirectory le::diff-smerge-file)))))
+        (let* ((default-directory (file-name-directory le::diff-smerge-file))
+               (toplevel (or (magit-toplevel) default-directory))
+               (rel-file (file-relative-name le::diff-smerge-file toplevel))
+               (buf (generate-new-buffer
+                     (format "*%s:%s*"
+                             le::diff-smerge-rev
+                             (file-name-nondirectory le::diff-smerge-file)))))
           (with-current-buffer buf
             (call-process "git" nil t nil
-                          "show" (concat le::diff-smerge-rev ":"
-                                         (file-relative-name le::diff-smerge-file
-                                                             (magit-toplevel))))
+                          "show" (concat le::diff-smerge-rev ":" rel-file))
             (let ((buffer-file-name le::diff-smerge-file))
               (delay-mode-hooks (set-auto-mode)))
             (font-lock-mode 1)
