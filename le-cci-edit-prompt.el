@@ -90,8 +90,8 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 
 (defun le::cci--project-key (project-root)
   "Derive the Claude Code project key from PROJECT-ROOT.
-Replaces / and . with -."
-  (replace-regexp-in-string "[/.]" "-" (directory-file-name (expand-file-name project-root))))
+Replaces /, ., and _ with - to match Claude Code's key format."
+  (replace-regexp-in-string "[/._ ]" "-" (directory-file-name (expand-file-name project-root))))
 
 (defun le::cci--session-jsonl-files (project-root)
   "Return list of JSONL files for the active Claude Code session, most recent first.
