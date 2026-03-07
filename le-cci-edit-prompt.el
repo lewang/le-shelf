@@ -28,6 +28,7 @@ Set in the cci vterm buffer, not the prompt buffer.")
 (defvar claude-code-ide--routing-token)
 (defvar claude-code-ide--routing-tokens)
 
+;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
   "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
 Returns non-nil on success, nil if no matching buffer found.
