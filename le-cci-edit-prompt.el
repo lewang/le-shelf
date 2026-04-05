@@ -138,6 +138,14 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
         (forward-line 1)))
     (vconcat (nreverse offsets))))
 
+;;;; System message filtering
+
+(defun le::cci--system-message-p (text)
+  "Return non-nil if TEXT looks like a system-injected message.
+Matches XML-tagged content, interrupt markers, and slash commands."
+  (or (string-match-p "\\`\\[Request interrupted by user" text)
+      (string-match-p "\\`<[a-z][-a-z_]*>" text)))
+
 ;;;; Extract message entry from a single JSONL line
 
 (defun le::cci--extract-message-entry (line)
@@ -169,8 +177,7 @@ TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
                                 ""))
                             content " "))))
                   (unless (string-empty-p t2) t2))))))
-        (when (and text
-                   (not (string-match-p "\\`\\[Request interrupted by user" text)))
+        (when (and text (not (le::cci--system-message-p text)))
           (cons timestamp text))))))
 
 ;;;; Lazy batch loading
