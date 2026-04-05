@@ -144,7 +144,10 @@ Offsets are oldest first.  Filters to only lines with extractable text content."
   "Parse a JSONL LINE and extract (TIMESTAMP . TEXT) for user messages, or nil.
 TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
   (let ((obj (ignore-errors (json-parse-string line :object-type 'alist))))
-    (when (and obj (equal (alist-get 'type obj) "user"))
+    (when (and obj
+               (equal (alist-get 'type obj) "user")
+               (not (alist-get 'isMeta obj))
+               (not (alist-get 'promptId obj)))
       (let* ((message (alist-get 'message obj))
              (content (alist-get 'content message))
              (ts-str (alist-get 'timestamp obj))
@@ -167,11 +170,7 @@ TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
                             content " "))))
                   (unless (string-empty-p t2) t2))))))
         (when text
-          (let ((cleaned (string-trim
-                          (replace-regexp-in-string
-                           "<[a-z][-a-z]*>[^<]*</[a-z][-a-z]*>" "" text))))
-            (unless (string-empty-p cleaned)
-              (cons timestamp cleaned))))))))
+          (cons timestamp text))))))
 
 ;;;; Lazy batch loading
 
