@@ -154,8 +154,7 @@ TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
   (let ((obj (ignore-errors (json-parse-string line :object-type 'alist))))
     (when (and obj
                (equal (alist-get 'type obj) "user")
-               (not (alist-get 'isMeta obj))
-               (not (alist-get 'promptId obj)))
+               (not (alist-get 'isMeta obj)))
       (let* ((message (alist-get 'message obj))
              (content (alist-get 'content message))
              (ts-str (alist-get 'timestamp obj))
