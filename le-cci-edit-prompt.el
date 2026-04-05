@@ -166,7 +166,7 @@ TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
                                 ""))
                             content " "))))
                   (unless (string-empty-p t2) t2))))))
-        (when text
+        (when (and text (not (string-match-p "<command-name>" text)))
           (cons timestamp text))))))
 
 ;;;; Lazy batch loading
