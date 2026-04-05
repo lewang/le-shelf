@@ -166,8 +166,12 @@ TIMESTAMP is integer seconds.  Returns nil for non-user messages or empty text."
                                 ""))
                             content " "))))
                   (unless (string-empty-p t2) t2))))))
-        (when (and text (not (string-match-p "<command-name>" text)))
-          (cons timestamp text))))))
+        (when text
+          (let ((cleaned (string-trim
+                          (replace-regexp-in-string
+                           "<[a-z][-a-z]*>[^<]*</[a-z][-a-z]*>" "" text))))
+            (unless (string-empty-p cleaned)
+              (cons timestamp cleaned))))))))
 
 ;;;; Lazy batch loading
 
