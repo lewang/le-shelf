@@ -235,7 +235,15 @@ When current file is exhausted, advances to the next file in the stack."
                     (when entry
                       (push entry new-entries)))))))
           (setf (le::cci--state-history st)
-                (append (le::cci--state-history st) new-entries))
+                (sort (append (le::cci--state-history st) new-entries)
+                      (lambda (a b) (> (car a) (car b)))))
+          ;; Dedup: consecutive entries with same text within 60s
+          (let ((hist (le::cci--state-history st)))
+            (while (cdr hist)
+              (if (and (equal (cdr (car hist)) (cdr (cadr hist)))
+                       (<= (abs (- (car (car hist)) (car (cadr hist)))) 60))
+                  (setcdr hist (cddr hist))
+                (setq hist (cdr hist)))))
           (cl-incf (le::cci--state-loaded-count st) batch-size))))))
 
 (defun le::cci--history-can-load-more-p ()
