@@ -53,6 +53,12 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
 (defvar le::cci-tab-finished-indicator "✅ "
   "String prepended to tab name when Claude has finished.")
 
+(defvar le::cci-tab-finished-max-age 3600
+  "Seconds after which a stale ✅ indicator is automatically cleared.")
+
+(defvar le::cci-tab--finished-times (make-hash-table :test 'equal)
+  "Maps project-dir to the `float-time' when ✅ was set.")
+
 (declare-function w--find-workspace-for-root "w" (root))
 (declare-function w--find-tab "w" (name))
 (declare-function w--find-workspace "w" (name))
@@ -97,12 +103,26 @@ INDICATOR is a string prefix, or nil to clear."
 ;;;###autoload
 (defun le::cci-tab-finished (project-dir)
   "Mark the tab for PROJECT-DIR as finished."
+  (le::cci-tab--expire-stale-indicators)
+  (puthash project-dir (float-time) le::cci-tab--finished-times)
   (le::cci-tab--set-indicator project-dir le::cci-tab-finished-indicator))
 
 ;;;###autoload
 (defun le::cci-tab-clear (project-dir)
   "Clear any indicator from the tab for PROJECT-DIR."
+  (remhash project-dir le::cci-tab--finished-times)
   (le::cci-tab--set-indicator project-dir nil))
+
+(defun le::cci-tab--expire-stale-indicators ()
+  "Clear ✅ indicators that have been unvisited for more than `le::cci-tab-finished-max-age' seconds."
+  (let ((now (float-time))
+        stale)
+    (maphash (lambda (dir set-time)
+               (when (> (- now set-time) le::cci-tab-finished-max-age)
+                 (push dir stale)))
+             le::cci-tab--finished-times)
+    (dolist (dir stale)
+      (le::cci-tab-clear dir))))
 
 ;;; Auto-dismiss finished indicator on tab select
 
