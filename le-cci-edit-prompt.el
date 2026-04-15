@@ -462,13 +462,16 @@ Updates `ring-index' in ST to track merge progress for lazy loading."
   (let* ((st le::cci--st)
          (text (string-trim (buffer-string)))
          (root (le::cci--state-project-root st))
+         (dir default-directory)
          (winconf (le::cci--state-saved-winconf st))
          (callback (le::cci--state-finish-callback st)))
     (unless (string-empty-p text)
       (le::cci--ring-push root text))
     (kill-buffer (current-buffer))
     (when winconf (set-window-configuration winconf))
-    (when callback (funcall callback text))))
+    (when callback
+      (let ((default-directory dir))
+        (funcall callback text)))))
 
 (defun le::cci-prompt-cancel ()
   "Cancel the prompt buffer."
