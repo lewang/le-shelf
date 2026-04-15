@@ -28,6 +28,82 @@ Set in the cci vterm buffer, not the prompt buffer.")
 (defvar claude-code-ide--routing-token)
 (defvar claude-code-ide--routing-tokens)
 
+(defvar-local le::cci--target-cci-buffer nil
+  "Buffer-local override for the target CCI buffer.
+Set when the user picks a CCI session for a buffer that has no
+natural mapping.  Persists across `le::cci-edit-prompt' calls.")
+
+(declare-function claude-code-ide--get-working-directory "claude-code-ide")
+(declare-function claude-code-ide--get-buffer-name "claude-code-ide")
+(declare-function claude-code-ide-send-prompt "claude-code-ide")
+
+(defun le::cci--live-cci-buffers ()
+  "Return alist of (BUFFER-NAME . DIRECTORY) for all live CCI sessions."
+  (let (result)
+    (maphash (lambda (dir tok)
+               (when-let* ((session (gethash tok claude-code-ide-mcp-server--sessions))
+                            (buf (plist-get session :buffer))
+                            ((buffer-live-p buf)))
+                 (push (cons (buffer-name buf) dir) result)))
+             claude-code-ide--routing-tokens)
+    result))
+
+(defun le::cci--dir-for-cci-buffer (cci-buf)
+  "Return the directory associated with CCI-BUF, or nil."
+  (catch 'found
+    (maphash (lambda (dir tok)
+               (when-let* ((session (gethash tok claude-code-ide-mcp-server--sessions))
+                            (buf (plist-get session :buffer))
+                            ((eq buf cci-buf)))
+                 (throw 'found dir)))
+             claude-code-ide--routing-tokens)))
+
+(defun le::cci--choose-cci-buffer ()
+  "Prompt the user to pick a live CCI buffer.
+Default is the one visible in the current frame, if any.
+If only one CCI buffer exists, return it without prompting."
+  (let* ((alist (le::cci--live-cci-buffers))
+         (names (mapcar #'car alist)))
+    (unless names
+      (user-error "No live CCI sessions"))
+    (if (= (length names) 1)
+        (get-buffer (car names))
+      (let* ((visible (seq-find (lambda (entry)
+                                  (get-buffer-window (car entry)))
+                                alist))
+             (default (car visible))
+             (chosen (completing-read "CCI session: " names nil t nil nil default)))
+        (get-buffer chosen)))))
+
+(defun le::cci--resolve-cci-target (force-choose)
+  "Resolve the target CCI buffer and its root directory.
+When FORCE-CHOOSE is non-nil, always prompt.
+Returns (ROOT . CCI-BUFFER) or signals an error."
+  (let (cci-buf)
+    (cond
+     ;; C-u: always prompt and save
+     (force-choose
+      (setq cci-buf (le::cci--choose-cci-buffer))
+      (setq le::cci--target-cci-buffer cci-buf))
+     ;; Saved override still live?
+     ((and le::cci--target-cci-buffer
+           (buffer-live-p le::cci--target-cci-buffer))
+      (setq cci-buf le::cci--target-cci-buffer))
+     ;; Default-directory maps to a session?
+     (t
+      (let* ((root (claude-code-ide--get-working-directory))
+             (buf-name (claude-code-ide--get-buffer-name root))
+             (buf (get-buffer buf-name)))
+        (if buf
+            (setq cci-buf buf)
+          ;; No match — prompt and save
+          (setq cci-buf (le::cci--choose-cci-buffer))
+          (setq le::cci--target-cci-buffer cci-buf)))))
+    (let ((dir (le::cci--dir-for-cci-buffer cci-buf)))
+      (unless dir
+        (user-error "Cannot find directory for %s" (buffer-name cci-buf)))
+      (cons dir cci-buf))))
+
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
   "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
@@ -434,11 +510,14 @@ then merges ring entries that are newer than the first sync point."
 ;;;; Main entry point
 
 ;;;###autoload
-(defun le::cci-edit-prompt ()
+(defun le::cci-edit-prompt (force-choose)
   "Open a buffer for composing a Claude Code prompt.
-M-p/M-n traverse history from the latest session.  C-c C-c finishes."
-  (interactive)
-  (let* ((root (claude-code-ide--get-working-directory))
+M-p/M-n traverse history from the latest session.  C-c C-c finishes.
+With prefix argument FORCE-CHOOSE, prompt for a CCI session and
+save the choice as a buffer-local override."
+  (interactive "P")
+  (let* ((target (le::cci--resolve-cci-target force-choose))
+         (root (car target))
          (short-root (abbreviate-file-name (directory-file-name root)))
          (buf-name (format "*cci-prompt: %s*" short-root))
          (existing (get-buffer buf-name)))
@@ -447,6 +526,7 @@ M-p/M-n traverse history from the latest session.  C-c C-c finishes."
       (let ((buf (generate-new-buffer buf-name)))
         (with-current-buffer buf
           (le::cci-prompt-mode)
+          (setq default-directory root)
           (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root)))
             (setq le::cci--st
                   (make-le::cci--state
