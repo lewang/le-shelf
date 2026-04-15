@@ -518,8 +518,9 @@ save the choice as a buffer-local override."
   (interactive "P")
   (let* ((target (le::cci--resolve-cci-target force-choose))
          (root (car target))
-         (short-root (abbreviate-file-name (directory-file-name root)))
-         (buf-name (format "*cci-prompt: %s*" short-root))
+         (cci-buf (cdr target))
+         (cci-name (buffer-name cci-buf))
+         (buf-name (format "*cci-prompt: %s*" cci-name))
          (existing (get-buffer buf-name)))
     (if existing
         (pop-to-buffer existing)
@@ -527,7 +528,7 @@ save the choice as a buffer-local override."
         (with-current-buffer buf
           (le::cci-prompt-mode)
           (setq default-directory root)
-          (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" short-root)))
+          (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" cci-name)))
             (setq le::cci--st
                   (make-le::cci--state
                    :saved-winconf (current-window-configuration)
