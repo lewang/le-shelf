@@ -134,9 +134,12 @@ window on the right side."
 Returns a plist (:cc-win W :top-left W :bottom-left W) when compatible,
 nil otherwise.
 
-Expected topology:
+Compatibility requires:
 - Exactly 3 windows (excluding minibuffer)
-- Left column (x=0) has exactly 2 windows"
+- Left column (x=0) has exactly 2 windows
+- `w-current' returns a workspace plist with `:project-root'
+- The right-column window's buffer is a Claude Code IDE session buffer
+- That CCI buffer's `default-directory' equals the workspace root"
   (let* ((wins (window-list nil 'no-mini))
          (left-wins (cl-remove-if-not
                      (lambda (w)
