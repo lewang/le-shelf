@@ -137,9 +137,7 @@ nil otherwise.
 Compatibility requires:
 - Exactly 3 windows (excluding minibuffer)
 - Left column (x=0) has exactly 2 windows
-- `w-current' returns a workspace plist with `:project-root'
-- The right-column window's buffer is a Claude Code IDE session buffer
-- That CCI buffer's `default-directory' equals the workspace root"
+- Right window holds the CCI session for the current workspace"
   (let* ((wins (window-list nil 'no-mini))
          (left-wins (cl-remove-if-not
                      (lambda (w)
