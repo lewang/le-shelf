@@ -146,15 +146,23 @@ Expected topology:
     (when (and (= (length wins) 3)
                (= (length left-wins) 2)
                (= (length right-wins) 1))
-      (let* ((sorted (sort left-wins
-                           (lambda (a b)
-                             (< (nth 1 (window-edges a))
-                                (nth 1 (window-edges b))))))
-             (top (car sorted))
-             (bottom (cadr sorted)))
-        (list :cc-win (car right-wins)
-              :top-left top
-              :bottom-left bottom)))))
+      (let* ((cc-win  (car right-wins))
+             (cc-buf  (window-buffer cc-win))
+             (ws-root (plist-get (w-current) :project-root)))
+        (when (and ws-root
+                   (claude-code-ide--session-buffer-p cc-buf)
+                   (string= (expand-file-name ws-root)
+                            (expand-file-name
+                             (buffer-local-value 'default-directory cc-buf))))
+          (let* ((sorted (sort left-wins
+                               (lambda (a b)
+                                 (< (nth 1 (window-edges a))
+                                    (nth 1 (window-edges b))))))
+                 (top (car sorted))
+                 (bottom (cadr sorted)))
+            (list :cc-win cc-win
+                  :top-left top
+                  :bottom-left bottom)))))))
 
 ;;;###autoload
 (defun le::ide--adjust-windows (layout)
