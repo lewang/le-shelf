@@ -16,6 +16,8 @@
 
 ;;; Code:
 
+(declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
+
 ;;;###autoload
 (defun le::vterm-send-C-g ()
   "Send C-g to the vterm process."
@@ -24,14 +26,15 @@
 
 ;;;###autoload
 (defun le::server-focus-on-claude-code-ide-on-exit ()
-  "Focus on the vterm window after server-done.
-Used as a `server-done-hook' to return to the CCI terminal."
-  (when-let* ((vterm-window
-              (get-window-with-predicate
-               (lambda (window)
-                 (with-current-buffer (window-buffer window)
-                   (eq major-mode 'vterm-mode))))))
-    (select-window vterm-window)))
+  "Focus the Claude Code window after server-done.
+Used as a `server-done-hook' to return to the CCI terminal.
+Backend-agnostic: matches the session buffer via
+`claude-code-ide--session-buffer-p' rather than a terminal major mode."
+  (when-let* ((claude-window
+               (get-window-with-predicate
+                (lambda (window)
+                  (claude-code-ide--session-buffer-p (window-buffer window))))))
+    (select-window claude-window)))
 
 ;;;###autoload
 (defun le::claude-prompt-file-setup ()
