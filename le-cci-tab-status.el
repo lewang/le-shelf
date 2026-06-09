@@ -69,14 +69,24 @@ INDICATOR is a string prefix, or nil to clear."
               (tab-bar-rename-tab new-name idx)))
           (force-mode-line-update t))))))
 
+(defun le::cci-tab--normalize-dir (project-dir)
+  "Return PROJECT-DIR as a canonical absolute directory name (trailing slash).
+External callers (e.g. the emacsclient hook passing CLAUDE_PROJECT_DIR) may
+supply a slash-less path; Emacs directory names conventionally end in \"/\"
+\(see `default-directory'), so coerce to that form for consistent hash keys
+and lookups."
+  (file-name-as-directory (expand-file-name project-dir)))
+
 (defun le::cci-tab--cci-buffer-for-dir (project-dir)
-  "Return the CCI session buffer whose root matches PROJECT-DIR, else nil."
-  (let ((root (expand-file-name project-dir)))
-    (seq-find (lambda (b)
-                (and (claude-code-ide--session-buffer-p b)
-                     (string= root (expand-file-name
-                                    (buffer-local-value 'default-directory b)))))
-              (buffer-list))))
+  "Return the CCI session buffer whose root matches PROJECT-DIR, else nil.
+Compares with `file-equal-p' so any residual representation difference
+\(symlinks, `.'/`..') between PROJECT-DIR and the buffer's `default-directory'
+does not matter."
+  (seq-find (lambda (b)
+              (and (claude-code-ide--session-buffer-p b)
+                   (file-equal-p project-dir
+                                 (buffer-local-value 'default-directory b))))
+            (buffer-list)))
 
 (defun le::cci-tab--clear-on-input ()
   "One-shot `pre-command-hook': clear this CCI buffer's tab indicator on any input.
@@ -97,24 +107,27 @@ Removes itself first so it fires once and never aborts the user's command."
 ;;;###autoload
 (defun le::cci-tab-input-pending (project-dir)
   "Mark the tab for PROJECT-DIR as needing user input."
-  (le::cci-tab--set-indicator project-dir le::cci-tab-pending-indicator)
-  (when le::cci-tab-status-mode
-    (le::cci-tab--arm-input-clear project-dir)))
+  (let ((project-dir (le::cci-tab--normalize-dir project-dir)))
+    (le::cci-tab--set-indicator project-dir le::cci-tab-pending-indicator)
+    (when le::cci-tab-status-mode
+      (le::cci-tab--arm-input-clear project-dir))))
 
 ;;;###autoload
 (defun le::cci-tab-finished (project-dir)
   "Mark the tab for PROJECT-DIR as finished."
-  (le::cci-tab--expire-stale-indicators)
-  (puthash project-dir (float-time) le::cci-tab--finished-times)
-  (le::cci-tab--set-indicator project-dir le::cci-tab-finished-indicator)
-  (when le::cci-tab-status-mode
-    (le::cci-tab--arm-input-clear project-dir)))
+  (let ((project-dir (le::cci-tab--normalize-dir project-dir)))
+    (le::cci-tab--expire-stale-indicators)
+    (puthash project-dir (float-time) le::cci-tab--finished-times)
+    (le::cci-tab--set-indicator project-dir le::cci-tab-finished-indicator)
+    (when le::cci-tab-status-mode
+      (le::cci-tab--arm-input-clear project-dir))))
 
 ;;;###autoload
 (defun le::cci-tab-clear (project-dir)
   "Clear any indicator from the tab for PROJECT-DIR."
-  (remhash project-dir le::cci-tab--finished-times)
-  (le::cci-tab--set-indicator project-dir nil))
+  (let ((project-dir (le::cci-tab--normalize-dir project-dir)))
+    (remhash project-dir le::cci-tab--finished-times)
+    (le::cci-tab--set-indicator project-dir nil)))
 
 (defun le::cci-tab--expire-stale-indicators ()
   "Clear ✅ indicators that have been unvisited for more than `le::cci-tab-finished-max-age' seconds."
