@@ -1,0 +1,153 @@
+;;; le-cci-tab-status.el --- Tab-bar status indicators for Claude Code sessions -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025
+
+;; Author: Le Wang
+;; Keywords: tools
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1"))
+
+;; This file is not part of GNU Emacs.
+
+;;; Commentary:
+
+;; Prepends a status indicator (⚡ pending input, ✅ finished) to a
+;; workspace's tab-bar tab name for Claude Code IDE sessions.
+;;
+;; Indicators are set from external hook scripts via emacsclient
+;; (`le::cci-tab-input-pending', `le::cci-tab-finished').  An indicator is
+;; cleared by any of: switching to the tab, the first input the CCI buffer
+;; receives (key/scroll/mouse), an explicit `le::cci-tab-clear', or stale
+;; expiry.  `le::cci-tab-status-mode' is the global on/off switch.
+
+;;; Code:
+
+(declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
+(declare-function w--find-workspace-for-root "w" (root))
+(declare-function w--find-tab "w" (name))
+(declare-function w--find-workspace "w" (name))
+
+(defvar le::cci-tab-pending-indicator "⚡ "
+  "String prepended to tab name when input is pending.")
+
+(defvar le::cci-tab-finished-indicator "✅ "
+  "String prepended to tab name when Claude has finished.")
+
+(defvar le::cci-tab-finished-max-age 3600
+  "Seconds after which a stale ✅ indicator is automatically cleared.")
+
+(defvar le::cci-tab--finished-times (make-hash-table :test 'equal)
+  "Maps project-dir to the `float-time' when ✅ was set.")
+
+(defun le::cci-tab--find-tab (project-dir)
+  "Find the tab and frame for PROJECT-DIR via w workspace.
+Returns (TAB . FRAME) or nil."
+  (when (fboundp 'w--find-workspace-for-root)
+    (when-let* ((ws (w--find-workspace-for-root project-dir))
+                (name (plist-get ws :name)))
+      (w--find-tab name))))
+
+(defun le::cci-tab--set-indicator (project-dir indicator)
+  "Set INDICATOR prefix on the tab for PROJECT-DIR.
+INDICATOR is a string prefix, or nil to clear."
+  (when-let* ((found (le::cci-tab--find-tab project-dir))
+              (tab (car found))
+              (frame (cdr found)))
+    (let* ((current-name (alist-get 'name (cdr tab)))
+           (clean-name current-name))
+      ;; Strip any existing indicator
+      (dolist (prefix (list le::cci-tab-pending-indicator
+                            le::cci-tab-finished-indicator))
+        (when (string-prefix-p prefix clean-name)
+          (setq clean-name (substring clean-name (length prefix)))))
+      ;; Build new name
+      (let ((new-name (if indicator (concat indicator clean-name) clean-name)))
+        (unless (string= current-name new-name)
+          (let* ((tabs (funcall tab-bar-tabs-function frame))
+                 (idx (1+ (seq-position tabs tab #'eq))))
+            (with-selected-frame frame
+              (tab-bar-rename-tab new-name idx)))
+          (force-mode-line-update t))))))
+
+(defun le::cci-tab--cci-buffer-for-dir (project-dir)
+  "Return the CCI session buffer whose root matches PROJECT-DIR, else nil."
+  (let ((root (expand-file-name project-dir)))
+    (seq-find (lambda (b)
+                (and (claude-code-ide--session-buffer-p b)
+                     (string= root (expand-file-name
+                                    (buffer-local-value 'default-directory b)))))
+              (buffer-list))))
+
+(defun le::cci-tab--clear-on-input ()
+  "One-shot `pre-command-hook': clear this CCI buffer's tab indicator on any input.
+Removes itself first so it fires once and never aborts the user's command."
+  (remove-hook 'pre-command-hook #'le::cci-tab--clear-on-input t)
+  (with-demoted-errors "le::cci-tab--clear-on-input: %S"
+    (le::cci-tab-clear default-directory)))
+
+(defun le::cci-tab--arm-input-clear (project-dir)
+  "Arm a one-shot input-clear on the CCI buffer for PROJECT-DIR."
+  (when-let* ((buf (le::cci-tab--cci-buffer-for-dir project-dir)))
+    (with-current-buffer buf
+      ;; `add-hook' with a named function is idempotent across repeated sets.
+      (add-hook 'pre-command-hook #'le::cci-tab--clear-on-input nil t))))
+
+;;; Public API (called from hook scripts via emacsclient --eval)
+
+;;;###autoload
+(defun le::cci-tab-input-pending (project-dir)
+  "Mark the tab for PROJECT-DIR as needing user input."
+  (le::cci-tab--set-indicator project-dir le::cci-tab-pending-indicator)
+  (when le::cci-tab-status-mode
+    (le::cci-tab--arm-input-clear project-dir)))
+
+;;;###autoload
+(defun le::cci-tab-finished (project-dir)
+  "Mark the tab for PROJECT-DIR as finished."
+  (le::cci-tab--expire-stale-indicators)
+  (puthash project-dir (float-time) le::cci-tab--finished-times)
+  (le::cci-tab--set-indicator project-dir le::cci-tab-finished-indicator)
+  (when le::cci-tab-status-mode
+    (le::cci-tab--arm-input-clear project-dir)))
+
+;;;###autoload
+(defun le::cci-tab-clear (project-dir)
+  "Clear any indicator from the tab for PROJECT-DIR."
+  (remhash project-dir le::cci-tab--finished-times)
+  (le::cci-tab--set-indicator project-dir nil))
+
+(defun le::cci-tab--expire-stale-indicators ()
+  "Clear ✅ indicators that have been unvisited for more than `le::cci-tab-finished-max-age' seconds."
+  (let ((now (float-time))
+        stale)
+    (maphash (lambda (dir set-time)
+               (when (> (- now set-time) le::cci-tab-finished-max-age)
+                 (push dir stale)))
+             le::cci-tab--finished-times)
+    (dolist (dir stale)
+      (le::cci-tab-clear dir))))
+
+;;; Auto-dismiss finished indicator on tab select
+
+(defun le::cci-tab--on-tab-select (_prev-tab new-tab)
+  "Clear any status indicator when user selects a tab."
+  (when-let* ((name (alist-get 'name (cdr new-tab)))
+              ((or (string-prefix-p le::cci-tab-finished-indicator name)
+                   (string-prefix-p le::cci-tab-pending-indicator name)))
+              (ws-name (alist-get 'w-workspace (cdr new-tab))))
+    (when-let* ((ws (w--find-workspace ws-name))
+                (project-dir (plist-get ws :project-root)))
+      (le::cci-tab-clear project-dir))))
+
+;;;###autoload
+(define-minor-mode le::cci-tab-status-mode
+  "Toggle tab bar status indicators for Claude Code sessions.
+When enabled, selecting a tab clears its ⚡/✅ indicator."
+  :global t
+  :group 'le-cci
+  (if le::cci-tab-status-mode
+      (add-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)
+    (remove-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)))
+
+(provide 'le-cci-tab-status)
+;;; le-cci-tab-status.el ends here
