@@ -231,36 +231,50 @@ Two layout strategies:
                             (find-file-noselect file))
                           (dired-noselect project-root))))
     (le::debug-message "ide-reset: project-root=%s project-buf=%s" project-root project-buf)
-    ;; prepare layout
-    (if-let* ((layout (le::ide--compatible-layout)))
-        (progn
-          (le::debug-message "ide-reset: compatible layout, selecting top-left")
-          (select-window (plist-get layout :top-left)))
-      (le::debug-message "ide-reset: incompatible layout, delete-other-windows")
-      ;; Tear down to one window.  `ignore-window-parameters' lets us delete
-      ;; side windows (e.g. the claude-code-ide window).  When invoked from a
-      ;; dedicated window with no normal sibling, fall back to it and clear its
-      ;; dedication so the `switch-to-buffer' below does not error.
-      (let ((ignore-window-parameters t))
-        (delete-other-windows
-         (or (cl-find-if-not #'window-dedicated-p (window-list))
-             (selected-window))))
-      (set-window-dedicated-p (selected-window) nil))
-    (le::debug-message "ide-reset: switch-to-buffer %s" project-buf)
-    (switch-to-buffer project-buf nil t)
-    ;; now display-buffer-alist takes over
-    (le::debug-message "ide-reset: starting claude-code-ide")
-    (save-selected-window
-      (let ((default-directory project-root))
-        (condition-case nil
-            (claude-code-ide-switch-to-buffer)
-          (user-error (claude-code-ide)))))
-    (le::debug-message "ide-reset: starting magit-status-noselect")
-    (le::magit-status-noselect project-root)
-    ;; final adjustments
-    (le::debug-message "ide-reset: adjusting window sizes")
-    (le::ide--adjust-windows (le::ide--compatible-layout))
-    (le::debug-message "ide-reset: done")))
+    (let ((compatiblep (le::ide--compatible-layout))
+          bottom-left)
+      (if compatiblep
+          (progn
+            (le::debug-message "ide-reset: compatible layout, reusing")
+            (select-window (plist-get compatiblep :top-left))
+            (switch-to-buffer project-buf nil t)
+            (setq bottom-left (plist-get compatiblep :bottom-left)))
+        ;; Not compatible: tear down to a single known-good window, then build.
+        (le::debug-message "ide-reset: incompatible layout, rebuilding")
+        ;; `ignore-window-parameters' lets us delete side windows (e.g. the
+        ;; claude-code-ide window).  When invoked from a dedicated window with no
+        ;; normal sibling, fall back to it.
+        (let ((ignore-window-parameters t))
+          (delete-other-windows
+           (or (cl-find-if-not #'window-dedicated-p (window-list))
+               (selected-window))))
+        ;; Survivor may be dedicated or itself a side window (reset invoked from
+        ;; one); demote it to a plain window so the split is safe (no side window
+        ;; -> no Emacs 31 split-window recursion) and `switch-to-buffer' does not
+        ;; error on a dedicated window.
+        (let ((win (selected-window)))
+          (set-window-dedicated-p win nil)
+          (set-window-parameter win 'window-side nil))
+        (switch-to-buffer project-buf nil t)
+        (setq bottom-left (split-window (selected-window)
+                                        (- le::frame-magit-window-height) 'below)))
+      (le::debug-message "ide-reset: starting claude-code-ide")
+      (save-selected-window
+        (let ((default-directory project-root))
+          (condition-case nil
+              (claude-code-ide-switch-to-buffer)
+            (user-error (claude-code-ide)))))
+      ;; Place magit directly in the bottom-left pane -- no dependence on the
+      ;; display-buffer-alist routing or on `le::ide--compatible-layout'.
+      (le::debug-message "ide-reset: placing magit in bottom-left")
+      (if (window-live-p bottom-left)
+          (with-selected-window bottom-left
+            (let ((display-buffer-overriding-action '(display-buffer-same-window)))
+              (le::magit-status-noselect project-root)))
+        (le::magit-status-noselect project-root))
+      (le::debug-message "ide-reset: adjusting window sizes")
+      (le::ide--adjust-windows (le::ide--compatible-layout))
+      (le::debug-message "ide-reset: done"))))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
