@@ -237,8 +237,15 @@ Two layout strategies:
           (le::debug-message "ide-reset: compatible layout, selecting top-left")
           (select-window (plist-get layout :top-left)))
       (le::debug-message "ide-reset: incompatible layout, delete-other-windows")
-      (delete-other-windows
-       (cl-find-if-not #'window-dedicated-p (window-list))))
+      ;; Tear down to one window.  `ignore-window-parameters' lets us delete
+      ;; side windows (e.g. the claude-code-ide window).  When invoked from a
+      ;; dedicated window with no normal sibling, fall back to it and clear its
+      ;; dedication so the `switch-to-buffer' below does not error.
+      (let ((ignore-window-parameters t))
+        (delete-other-windows
+         (or (cl-find-if-not #'window-dedicated-p (window-list))
+             (selected-window))))
+      (set-window-dedicated-p (selected-window) nil))
     (le::debug-message "ide-reset: switch-to-buffer %s" project-buf)
     (switch-to-buffer project-buf nil t)
     ;; now display-buffer-alist takes over
