@@ -77,7 +77,8 @@ If only one CCI buffer exists, return it without prompting."
 
 (defun le::cci--resolve-cci-target (force-choose)
   "Resolve the target CCI buffer and its root directory.
-When FORCE-CHOOSE is non-nil, always prompt.
+When FORCE-CHOOSE is non-nil, always prompt.  When the current
+buffer is itself a CCI session buffer, it is the target.
 Returns (ROOT . CCI-BUFFER) or signals an error."
   (let (cci-buf)
     (cond
@@ -85,6 +86,11 @@ Returns (ROOT . CCI-BUFFER) or signals an error."
      (force-choose
       (setq cci-buf (le::cci--choose-cci-buffer))
       (setq le::cci--target-cci-buffer cci-buf))
+     ;; Invoked from a CCI session buffer? It is the target.  Resolved via
+     ;; the routing-token table, not `default-directory', which is not
+     ;; authoritative in terminal buffers.
+     ((le::cci--dir-for-cci-buffer (current-buffer))
+      (setq cci-buf (current-buffer)))
      ;; Saved override still live?
      ((and le::cci--target-cci-buffer
            (buffer-live-p le::cci--target-cci-buffer))
