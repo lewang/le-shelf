@@ -110,6 +110,41 @@ Returns (ROOT . CCI-BUFFER) or signals an error."
         (user-error "Cannot find directory for %s" (buffer-name cci-buf)))
       (cons dir cci-buf))))
 
+;;;; Active-region file reference (@path#beg-end @-mention)
+
+(defun le::cci--capture-region-ref ()
+  "If the current buffer has an active region on a file that exists on disk,
+return (:file F :beg B :end E) with 1-based inclusive line numbers, else nil."
+  (when (and (use-region-p) buffer-file-name (file-exists-p buffer-file-name))
+    (let* ((rb (region-beginning))
+           (re (region-end))
+           (beg (line-number-at-pos rb))
+           (end (line-number-at-pos re)))
+      ;; If the region ends exactly at a line start, that trailing line isn't
+      ;; really selected — exclude it (standard idiom).
+      (when (and (> re rb) (save-excursion (goto-char re) (bolp)))
+        (setq end (1- end)))
+      (list :file buffer-file-name :beg beg :end end))))
+
+(defun le::cci--file-reference (file beg end root)
+  "Return the Claude Code @-mention \"@PATH#RANGE\" for FILE lines BEG..END.
+PATH is relative to ROOT when FILE is under it, absolute otherwise.
+RANGE collapses to a single number when BEG = END."
+  (let* ((abs (expand-file-name file))
+         (root* (file-name-as-directory (expand-file-name root)))
+         (path (if (string-prefix-p root* abs) (substring abs (length root*)) abs))
+         (range (if (= beg end) (number-to-string beg) (format "%d-%d" beg end))))
+    (format "@%s#%s" path range)))
+
+(defun le::cci--append-file-reference (ref)
+  "Append REF at the bottom of the current buffer; leave point at top."
+  (let ((inhibit-read-only t))
+    (goto-char (point-max))
+    (skip-chars-backward " \t\n")
+    (delete-region (point) (point-max))   ; trim trailing whitespace
+    (insert "\n\n" ref)                   ; point line, blank line, ref
+    (goto-char (point-min))))
+
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
   "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
@@ -525,28 +560,42 @@ M-p/M-n traverse history from the latest session.  C-c C-c finishes.
 With prefix argument FORCE-CHOOSE, prompt for a CCI session and
 save the choice as a buffer-local override."
   (interactive "P")
-  (let* ((target (le::cci--resolve-cci-target force-choose))
+  (let* ((src-buf (current-buffer))
+         (region-ref (le::cci--capture-region-ref))
+         (target (le::cci--resolve-cci-target force-choose))
          (root (car target))
          (cci-buf (cdr target))
          (cci-name (buffer-name cci-buf))
          (buf-name (format "*cci-prompt: %s*" cci-name))
-         (existing (get-buffer buf-name)))
-    (if existing
-        (pop-to-buffer existing)
-      (let ((buf (generate-new-buffer buf-name)))
-        (with-current-buffer buf
-          (le::cci-prompt-mode)
-          (setq default-directory root)
-          (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" cci-name)))
-            (setq le::cci--st
-                  (make-le::cci--state
-                   :saved-winconf (current-window-configuration)
-                   :finish-callback (lambda (text)
-                                      (claude-code-ide-send-prompt text))
-                   :header-line-default hdr))
-            (setq header-line-format hdr))
-          (le::cci--history-init root)
-          (pop-to-buffer (current-buffer)))))))
+         (existing (get-buffer buf-name))
+         (buf (or existing
+                  (let ((b (generate-new-buffer buf-name)))
+                    (with-current-buffer b
+                      (le::cci-prompt-mode)
+                      (setq default-directory root)
+                      (let ((hdr (format " Enter Claude Code prompt for %s    (C-c C-c to send, C-c C-k to cancel)" cci-name)))
+                        (setq le::cci--st
+                              (make-le::cci--state
+                               :saved-winconf (current-window-configuration)
+                               :finish-callback (lambda (text)
+                                                  (claude-code-ide-send-prompt text))
+                               :header-line-default hdr))
+                        (setq header-line-format hdr))
+                      (le::cci--history-init root))
+                    b))))
+    (when region-ref
+      ;; Offer to save the source buffer before referencing it on disk.
+      (with-current-buffer src-buf
+        (when (buffer-modified-p)
+          (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
+            (save-buffer))))
+      (with-current-buffer buf
+        (le::cci--append-file-reference
+         (le::cci--file-reference (plist-get region-ref :file)
+                                  (plist-get region-ref :beg)
+                                  (plist-get region-ref :end)
+                                  root))))
+    (pop-to-buffer buf)))
 
 (provide 'le-cci-edit-prompt)
 ;;; le-cci-edit-prompt.el ends here
