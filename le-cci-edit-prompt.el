@@ -37,6 +37,10 @@ natural mapping.  Persists across `le::cci-edit-prompt' calls.")
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide")
 (declare-function claude-code-ide-send-prompt "claude-code-ide")
 
+(declare-function org-before-first-heading-p "org")
+(declare-function org-back-to-heading "org")
+(declare-function org-get-heading "org")
+
 (defun le::cci--live-cci-buffers ()
   "Return alist of (BUFFER-NAME . DIRECTORY) for all live CCI sessions."
   (let (result)
@@ -114,17 +118,29 @@ Returns (ROOT . CCI-BUFFER) or signals an error."
 
 (defun le::cci--capture-region-ref ()
   "If the current buffer has an active region on a file that exists on disk,
-return (:file F :beg B :end E) with 1-based inclusive line numbers, else nil."
+return (:file F :beg B :end E :subject S) with 1-based inclusive line numbers,
+else nil.  SUBJECT is the org heading title of the entry containing the region
+start (stars, TODO keyword, priority, and tags stripped), or nil when the
+buffer is not org-mode or the region starts above the first heading."
   (when (and (use-region-p) buffer-file-name (file-exists-p buffer-file-name))
     (let* ((rb (region-beginning))
            (re (region-end))
            (beg (line-number-at-pos rb))
-           (end (line-number-at-pos re)))
+           (end (line-number-at-pos re))
+           (subject (when (derived-mode-p 'org-mode)
+                      (save-excursion
+                        (goto-char rb)
+                        (unless (org-before-first-heading-p)
+                          (org-back-to-heading t)
+                          (let ((h (string-trim
+                                    (substring-no-properties
+                                     (org-get-heading t t t t)))))
+                            (unless (string-empty-p h) h)))))))
       ;; If the region ends exactly at a line start, that trailing line isn't
       ;; really selected — exclude it (standard idiom).
       (when (and (> re rb) (save-excursion (goto-char re) (bolp)))
         (setq end (1- end)))
-      (list :file buffer-file-name :beg beg :end end))))
+      (list :file buffer-file-name :beg beg :end end :subject subject))))
 
 (defun le::cci--file-reference (file beg end root)
   "Return the Claude Code @-mention \"@PATH#RANGE\" for FILE lines BEG..END.
@@ -136,14 +152,19 @@ RANGE collapses to a single number when BEG = END."
          (range (if (= beg end) (number-to-string beg) (format "%d-%d" beg end))))
     (format "@%s#%s" path range)))
 
-(defun le::cci--append-file-reference (ref)
-  "Append REF at the bottom of the current buffer; leave point at top."
+(defun le::cci--prefill-region-prompt (subject ref)
+  "Prefill the current prompt buffer with an optional \"re: SUBJECT\" line,
+a composing line, and REF at the bottom.  Leave point on the composing line."
   (let ((inhibit-read-only t))
     (goto-char (point-max))
     (skip-chars-backward " \t\n")
     (delete-region (point) (point-max))   ; trim trailing whitespace
-    (insert "\n\n" ref)                   ; point line, blank line, ref
-    (goto-char (point-min))))
+    (insert "\n\n" ref)                   ; composing line, blank line, ref
+    (goto-char (point-min))
+    (when subject
+      (insert "re: " subject "\n")
+      (goto-char (point-min))
+      (forward-line 1))))                 ; point onto the composing line
 
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
@@ -590,7 +611,8 @@ save the choice as a buffer-local override."
           (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
             (save-buffer))))
       (with-current-buffer buf
-        (le::cci--append-file-reference
+        (le::cci--prefill-region-prompt
+         (plist-get region-ref :subject)
          (le::cci--file-reference (plist-get region-ref :file)
                                   (plist-get region-ref :beg)
                                   (plist-get region-ref :end)
