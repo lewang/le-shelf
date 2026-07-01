@@ -117,12 +117,14 @@ Returns (ROOT . CCI-BUFFER) or signals an error."
 ;;;; Active-region file reference (@path#beg-end @-mention)
 
 (defun le::cci--capture-region-ref ()
-  "If the current buffer has an active region on a file that exists on disk,
+  "If the current buffer has an active region and visits a file,
 return (:file F :beg B :end E :subject S) with 1-based inclusive line numbers,
-else nil.  SUBJECT is the org heading title of the entry containing the region
+else nil.  FILE may not yet exist on disk (e.g. an unsaved buffer) — the
+caller is responsible for offering to save it before referencing it.
+SUBJECT is the org heading title of the entry containing the region
 start (stars, TODO keyword, priority, and tags stripped), or nil when the
 buffer is not org-mode or the region starts above the first heading."
-  (when (and (use-region-p) buffer-file-name (file-exists-p buffer-file-name))
+  (when (and (use-region-p) buffer-file-name)
     (let* ((rb (region-beginning))
            (re (region-end))
            (beg (line-number-at-pos rb))
@@ -605,18 +607,25 @@ save the choice as a buffer-local override."
                       (le::cci--history-init root))
                     b))))
     (when region-ref
-      ;; Offer to save the source buffer before referencing it on disk.
-      (with-current-buffer src-buf
-        (when (buffer-modified-p)
-          (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
-            (save-buffer))))
-      (with-current-buffer buf
-        (le::cci--prefill-region-prompt
-         (plist-get region-ref :subject)
-         (le::cci--file-reference (plist-get region-ref :file)
-                                  (plist-get region-ref :beg)
-                                  (plist-get region-ref :end)
-                                  root))))
+      (let ((file (plist-get region-ref :file)))
+        ;; Offer to save the source buffer before referencing it on disk —
+        ;; whether it's never been saved, or has unsaved edits.
+        (with-current-buffer src-buf
+          (cond
+           ((not (file-exists-p file))
+            (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
+              (save-buffer)))
+           ((buffer-modified-p)
+            (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
+              (save-buffer)))))
+        (when (file-exists-p file)
+          (with-current-buffer buf
+            (le::cci--prefill-region-prompt
+             (plist-get region-ref :subject)
+             (le::cci--file-reference file
+                                      (plist-get region-ref :beg)
+                                      (plist-get region-ref :end)
+                                      root))))))
     (pop-to-buffer buf)))
 
 (provide 'le-cci-edit-prompt)
