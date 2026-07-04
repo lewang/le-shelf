@@ -147,38 +147,47 @@ buffer is not org-mode or the region starts above the first heading."
       (list :file buffer-file-name :beg beg :end end :subject subject))))
 
 (defun le::cci--point-todo-doing-ancestors ()
-  "Return subjects of headings enclosing point whose TODO keyword is
-TODO or DOING, closest first.  Stars, keyword, priority, and tags are
-stripped.  Walks from the heading containing point up through each
-ancestor to the top, filtering to just the qualifying ones -- an
-ancestor without a TODO/DOING keyword is skipped but does not stop the
-walk.  Empty (nil) when the buffer isn't org-mode, point is above the
-first heading, or no ancestor qualifies."
+  "Return (SUBJECT . POINT) for each heading enclosing point whose TODO
+keyword is TODO or DOING, closest first.  SUBJECT has stars, keyword,
+priority, and tags stripped; POINT is the heading's buffer position,
+used to derive a location reference to it.  Walks from the heading
+containing point up through each ancestor to the top, filtering to
+just the qualifying ones -- an ancestor without a TODO/DOING keyword is
+skipped but does not stop the walk.  Empty (nil) when the buffer isn't
+org-mode, point is above the first heading, or no ancestor qualifies."
   (when (and (derived-mode-p 'org-mode) (not (org-before-first-heading-p)))
     (save-excursion
       (org-back-to-heading t)
       (let (candidates)
         (while (progn
                  (when (member (org-get-todo-state) '("TODO" "DOING"))
-                   (push (string-trim
-                          (substring-no-properties
-                           (org-get-heading t t t t)))
+                   (push (cons (string-trim
+                                (substring-no-properties
+                                 (org-get-heading t t t t)))
+                               (point))
                          candidates))
                  (org-up-heading-safe)))
         (nreverse candidates)))))
 
 (defun le::cci--capture-point-subject ()
-  "Return (:subject S) using the TODO/DOING heading enclosing point, or
-nil if none qualifies.  When more than one ancestor heading qualifies,
-prompts for which one, defaulting to the closest.  Used as the
-fallback to `le::cci--capture-region-ref' when no region is active, so
-a \"re: SUBJECT\" line still gets added based on what task point is
-currently in."
+  "Return a region-ref-shaped plist for the TODO/DOING heading enclosing
+point, or nil if none qualifies.  When more than one ancestor heading
+qualifies, prompts for which one, defaulting to the closest.  Includes
+:file/:beg/:end (the heading's own line, so the eventual @-mention
+points straight at it) when the buffer visits a file, else just
+:subject.  Used as the fallback to `le::cci--capture-region-ref' when
+no region is active, so a \"re: SUBJECT\" line and a location
+reference still get added based on what task point is currently in."
   (when-let* ((candidates (le::cci--point-todo-doing-ancestors)))
-    (list :subject
-          (if (cdr candidates)
-              (completing-read "Subject heading: " candidates nil t nil nil (car candidates))
-            (car candidates)))))
+    (let* ((chosen (if (cdr candidates)
+                        (completing-read "Subject heading: " candidates nil t
+                                         nil nil (caar candidates))
+                      (caar candidates)))
+           (pos (cdr (assoc chosen candidates))))
+      (if buffer-file-name
+          (let ((line (line-number-at-pos pos)))
+            (list :file buffer-file-name :beg line :end line :subject chosen))
+        (list :subject chosen)))))
 
 (defun le::cci--file-reference (file beg end root)
   "Return the Claude Code @-mention \"@PATH#RANGE\" for FILE lines BEG..END.
