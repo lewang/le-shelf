@@ -21,28 +21,33 @@
 (defvar claude-code-ide--routing-tokens)
 (defvar le::cci--return-buffer)
 
-(defun le::cci--prompt-buffer-open-p ()
+(defun le::cci--prompt-buffer-has-draft-p ()
   "Return non-nil if a CCI prompt-editing buffer for the current CCI
 session buffer is already open with a non-empty draft.
-An empty compose buffer has nothing to protect, so it doesn't count --
-Claude CLI's captured text is free to populate it as normal.  Called
-from a CCI session buffer (vterm or ghostel), so the session's own
-buffer name is all `le::cci-edit-prompt' needs to compute its compose
-buffer's name."
+If that buffer exists but is empty, it is killed as a side effect --
+it has nothing to protect, and `le::cci-edit-prompt' would otherwise
+reuse it as-is without applying newly captured text to it (it only
+seeds fresh buffers), so leaving it around would silently swallow the
+next capture.  Called from a CCI session buffer (vterm or ghostel), so
+the session's own buffer name is all `le::cci-edit-prompt' needs to
+compute its compose buffer's name."
   (when-let* ((buf (get-buffer (format "*cci-prompt: %s*" (buffer-name)))))
-    (> (buffer-size buf) 0)))
+    (if (> (buffer-size buf) 0)
+        t
+      (kill-buffer buf)
+      nil)))
 
 ;;;###autoload
 (defun le::vterm-send-C-g ()
   "Send C-g to the vterm process.
 Errors instead when a CCI prompt-editing buffer for this session is
-already open: Claude CLI's own edit-in-$EDITOR flow (triggered by the
-C-g this sends) would hand its captured text to that buffer, but
-`le::cci-edit-prompt' ignores new text for an existing buffer to avoid
-clobbering its draft -- so sending C-g here would just silently
-discard whatever's currently typed into the CLI's prompt."
+already open with a draft: Claude CLI's own edit-in-$EDITOR flow
+(triggered by the C-g this sends) would hand its captured text to that
+buffer, but `le::cci-edit-prompt' ignores new text for an existing
+buffer to avoid clobbering its draft -- so sending C-g here would just
+silently discard whatever's currently typed into the CLI's prompt."
   (interactive)
-  (if (le::cci--prompt-buffer-open-p)
+  (if (le::cci--prompt-buffer-has-draft-p)
       (user-error "CCI prompt buffer for %s already open" (buffer-name))
     (vterm-send-key (kbd "C-g"))))
 
@@ -51,10 +56,10 @@ discard whatever's currently typed into the CLI's prompt."
 ;;;###autoload
 (defun le::ghostel-send-C-g ()
   "Like `ghostel-send-C-g', but errors instead of forwarding C-g to the
-CLI when a CCI prompt-editing buffer for this session is already open.
-See `le::vterm-send-C-g' for why."
+CLI when a CCI prompt-editing buffer for this session is already open
+with a draft.  See `le::vterm-send-C-g' for why."
   (interactive)
-  (if (le::cci--prompt-buffer-open-p)
+  (if (le::cci--prompt-buffer-has-draft-p)
       (user-error "CCI prompt buffer for %s already open" (buffer-name))
     (ghostel-send-C-g)))
 
