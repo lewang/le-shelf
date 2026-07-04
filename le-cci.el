@@ -91,6 +91,18 @@ carries no session-identifying information."
               ((buffer-live-p buf)))
     buf))
 
+(defun le::cci--server-edit-quietly ()
+  "Call `server-edit', suppressing its \"When done...\" hint for just
+this connection rather than via `server-client-instructions' globally.
+A plain dynamic `let' cannot scope this: `server-visit-files' prints
+the hint *after* `server-switch-hook' (and thus this function) returns,
+so the mutation has to outlive our call and be undone later instead --
+a timer fired once the current command finishes restores it."
+  (let ((orig server-client-instructions))
+    (setq server-client-instructions nil)
+    (run-at-time 0 nil (lambda () (setq server-client-instructions orig))))
+  (server-edit))
+
 ;;;###autoload
 (defun le::claude-prompt-file-setup ()
   "When visiting a Claude CLI prompt temp file, redirect editing to
@@ -127,7 +139,7 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
           (setq-local le::cci--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
-          (server-edit))))))
+          (le::cci--server-edit-quietly))))))
 
 ;;;###autoload
 (add-hook 'server-switch-hook #'le::claude-prompt-file-setup)
