@@ -91,16 +91,21 @@ carries no session-identifying information."
               ((buffer-live-p buf)))
     buf))
 
-(defun le::cci--server-edit-quietly ()
-  "Call `server-edit', suppressing its \"When done...\" hint for just
-this connection rather than via `server-client-instructions' globally.
-A plain dynamic `let' cannot scope this: `server-visit-files' prints
-the hint *after* `server-switch-hook' (and thus this function) returns,
-so the mutation has to outlive our call and be undone later instead --
-a timer fired once the current command finishes restores it."
+(defun le::cci--server-edit-with-message (message-text)
+  "Call `server-edit', showing MESSAGE-TEXT instead of its own \"When
+done...\" hint for this connection.
+`server-visit-files' always prints that hint *after*
+`server-switch-hook' (and thus this function) returns, so a plain
+`message' called from inside the hook -- or even just after this call
+returns -- is always clobbered by it; suppress it for this connection
+via `server-client-instructions', then queue a timer to fire once the
+current command finishes (guaranteed to run after that clobbering
+print) to show MESSAGE-TEXT and restore `server-client-instructions'."
   (let ((orig server-client-instructions))
     (setq server-client-instructions nil)
-    (run-at-time 0 nil (lambda () (setq server-client-instructions orig))))
+    (run-at-time 0 nil (lambda ()
+                          (setq server-client-instructions orig)
+                          (message "%s" message-text))))
   (server-edit))
 
 ;;;###autoload
@@ -139,7 +144,7 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
           (setq-local le::cci--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
-          (le::cci--server-edit-quietly))))))
+          (le::cci--server-edit-with-message "Editing with le::cci-edit-prompt"))))))
 
 ;;;###autoload
 (add-hook 'server-switch-hook #'le::claude-prompt-file-setup)
