@@ -21,11 +21,39 @@
 (defvar claude-code-ide--routing-tokens)
 (defvar le::cci--return-buffer)
 
+(defun le::cci--prompt-buffer-open-p ()
+  "Return non-nil if a CCI prompt-editing buffer for the current CCI
+session buffer is already open.
+Called from a CCI session buffer (vterm or ghostel), so the session's
+own buffer name is all `le::cci-edit-prompt' needs to compute its
+compose buffer's name."
+  (get-buffer (format "*cci-prompt: %s*" (buffer-name))))
+
 ;;;###autoload
 (defun le::vterm-send-C-g ()
-  "Send C-g to the vterm process."
+  "Send C-g to the vterm process.
+Errors instead when a CCI prompt-editing buffer for this session is
+already open: Claude CLI's own edit-in-$EDITOR flow (triggered by the
+C-g this sends) would hand its captured text to that buffer, but
+`le::cci-edit-prompt' ignores new text for an existing buffer to avoid
+clobbering its draft -- so sending C-g here would just silently
+discard whatever's currently typed into the CLI's prompt."
   (interactive)
-  (vterm-send-key (kbd "C-g")))
+  (if (le::cci--prompt-buffer-open-p)
+      (user-error "CCI prompt buffer for %s already open" (buffer-name))
+    (vterm-send-key (kbd "C-g"))))
+
+(declare-function ghostel-send-C-g "ghostel")
+
+;;;###autoload
+(defun le::ghostel-send-C-g ()
+  "Like `ghostel-send-C-g', but errors instead of forwarding C-g to the
+CLI when a CCI prompt-editing buffer for this session is already open.
+See `le::vterm-send-C-g' for why."
+  (interactive)
+  (if (le::cci--prompt-buffer-open-p)
+      (user-error "CCI prompt buffer for %s already open" (buffer-name))
+    (ghostel-send-C-g)))
 
 (defun le::cci--blank-prompt-file-and-capture ()
   "Capture the current buffer's text, then erase and save it to disk.
@@ -82,14 +110,10 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
     (let* ((prompt-buf (current-buffer))
            (cci-buf (le::cci--session-buffer-for-client))
            (text (le::cci--blank-prompt-file-and-capture))
-           (editor-buf (condition-case err
-                           (if cci-buf
-                               (with-current-buffer cci-buf
-                                 (le::cci-edit-prompt nil text))
+           (editor-buf (if cci-buf
+                           (with-current-buffer cci-buf
                              (le::cci-edit-prompt nil text))
-                         (user-error
-                          (message "%s" (error-message-string err))
-                          nil))))
+                         (le::cci-edit-prompt nil text))))
       (when (and cci-buf (buffer-live-p editor-buf))
         (with-current-buffer editor-buf
           (setq-local le::cci--return-buffer cci-buf)))
