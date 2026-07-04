@@ -168,6 +168,14 @@ a composing line, and REF at the bottom.  Leave point on the composing line."
       (goto-char (point-min))
       (forward-line 1))))                 ; point onto the composing line
 
+(defun le::cci--prefill-initial-text (text)
+  "Prefill the current (freshly created, empty) prompt buffer with TEXT.
+Point is left at the end of TEXT for continued editing."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert text)
+    (goto-char (point-max))))
+
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
   "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
@@ -577,11 +585,14 @@ then merges ring entries that are newer than the first sync point."
 ;;;; Main entry point
 
 ;;;###autoload
-(defun le::cci-edit-prompt (force-choose)
+(defun le::cci-edit-prompt (force-choose &optional initial-text)
   "Open a buffer for composing a Claude Code prompt.
 M-p/M-n traverse history from the latest session.  C-c C-c finishes.
 With prefix argument FORCE-CHOOSE, prompt for a CCI session and
-save the choice as a buffer-local override."
+save the choice as a buffer-local override.
+INITIAL-TEXT, if non-nil, prefills a freshly created prompt buffer's
+content verbatim with point at the end; ignored when reusing an
+existing prompt buffer, so an in-progress draft is never clobbered."
   (interactive "P")
   (let* ((src-buf (current-buffer))
          (region-ref (le::cci--capture-region-ref))
@@ -604,7 +615,9 @@ save the choice as a buffer-local override."
                                                   (claude-code-ide-send-prompt text))
                                :header-line-default hdr))
                         (setq header-line-format hdr))
-                      (le::cci--history-init root))
+                      (le::cci--history-init root)
+                      (when initial-text
+                        (le::cci--prefill-initial-text initial-text)))
                     b))))
     (when region-ref
       (let ((file (plist-get region-ref :file)))

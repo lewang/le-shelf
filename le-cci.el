@@ -17,6 +17,9 @@
 ;;; Code:
 
 (declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
+(declare-function le::cci-edit-prompt "le-cci-edit-prompt" (force-choose &optional initial-text))
+(defvar claude-code-ide-mcp-server--sessions)
+(defvar claude-code-ide--routing-tokens)
 
 ;;;###autoload
 (defun le::vterm-send-C-g ()
@@ -24,29 +27,71 @@
   (interactive)
   (vterm-send-key (kbd "C-g")))
 
-;;;###autoload
-(defun le::server-focus-on-claude-code-ide-on-exit ()
-  "Focus the Claude Code window after server-done.
-Used as a `server-done-hook' to return to the CCI terminal.
-Backend-agnostic: matches the session buffer via
-`claude-code-ide--session-buffer-p' rather than a terminal major mode."
-  (when-let* ((claude-window
-               (get-window-with-predicate
-                (lambda (window)
-                  (claude-code-ide--session-buffer-p (window-buffer window))))))
-    (select-window claude-window)))
+(defun le::cci--blank-prompt-file-and-capture ()
+  "Capture the current buffer's text, then erase and save it to disk.
+Returns the captured text.  Used to hand off a Claude CLI temp-file
+prompt to `le::cci-edit-prompt' while leaving the temp file blank for
+the CLI to re-read."
+  (let ((text (buffer-string)))
+    (erase-buffer)
+    (save-buffer)
+    text))
+
+(defun le::cci--session-buffer-for-client ()
+  "Return the CCI session buffer for the emacsclient connection that
+opened the current buffer, resolved via the connecting client's
+working directory, or nil.
+`emacsclient' sends its cwd as a `-dir' protocol command (so relative
+filenames resolve correctly); `server.el' stores it as the
+`server-client-directory' process property.  That directory is
+matched against `claude-code-ide--routing-tokens' the same way
+`le::cci--dir-for-cci-buffer' does, even though the temp file itself
+carries no session-identifying information."
+  (when-let* ((client (car server-buffer-clients))
+              (dir (process-get client 'server-client-directory))
+              (token (gethash dir claude-code-ide--routing-tokens))
+              (session (gethash token claude-code-ide-mcp-server--sessions))
+              (buf (plist-get session :buffer))
+              ((buffer-live-p buf)))
+    buf))
 
 ;;;###autoload
 (defun le::claude-prompt-file-setup ()
-  "Setup buffer-local hooks for Claude prompt files.
+  "When visiting a Claude CLI prompt temp file, redirect editing to
+`le::cci-edit-prompt' instead of editing the temp file directly.
 
-Auto-return to vterm window after editing Claude prompt files.
+Captures the file's current text, blanks and saves the file (so the
+CLI resumes with an empty prompt), opens the CCI prompt-editing buffer
+prefilled with the captured text (targeting the CCI session identified
+via `le::cci--session-buffer-for-client', falling back to
+`le::cci-edit-prompt''s own resolution when that's unavailable), then
+completes the emacsclient session for this buffer (equivalent to
+\\[server-edit]).
+
+Installed on `server-switch-hook' rather than `server-visit-hook':
+per `server-visit-files'/`server-execute' in server.el,
+`server-buffer-clients' (needed to read the connecting client's
+working directory) is only populated *after* `server-visit-hook' runs,
+but `server-switch-hook' fires later, once the client is fully
+registered.
 
 Should have this setting: (setq server-window \\='pop-to-buffer)"
   (when (and (buffer-file-name)
              (string-match-p "^claude-prompt-.*\\.md$"
                              (file-name-nondirectory (buffer-file-name))))
-    (add-hook 'server-done-hook 'le::server-focus-on-claude-code-ide-on-exit nil t)))
+    (let* ((prompt-buf (current-buffer))
+           (cci-buf (le::cci--session-buffer-for-client))
+           (text (le::cci--blank-prompt-file-and-capture)))
+      (if cci-buf
+          (with-current-buffer cci-buf
+            (le::cci-edit-prompt nil text))
+        (le::cci-edit-prompt nil text))
+      (when (buffer-live-p prompt-buf)
+        (with-current-buffer prompt-buf
+          (server-edit))))))
+
+;;;###autoload
+(add-hook 'server-switch-hook #'le::claude-prompt-file-setup)
 
 (provide 'le-cci)
 ;;; le-cci.el ends here
