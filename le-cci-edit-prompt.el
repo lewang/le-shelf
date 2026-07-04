@@ -154,27 +154,33 @@ RANGE collapses to a single number when BEG = END."
          (range (if (= beg end) (number-to-string beg) (format "%d-%d" beg end))))
     (format "@%s#%s" path range)))
 
-(defun le::cci--prefill-region-prompt (subject ref)
-  "Prefill the current prompt buffer with an optional \"re: SUBJECT\" line,
-a composing line, and REF at the bottom.  Leave point on the composing line."
-  (let ((inhibit-read-only t))
-    (goto-char (point-max))
-    (skip-chars-backward " \t\n")
-    (delete-region (point) (point-max))   ; trim trailing whitespace
-    (insert "\n\n" ref)                   ; composing line, blank line, ref
-    (goto-char (point-min))
-    (when subject
-      (insert "re: " subject "\n")
-      (goto-char (point-min))
-      (forward-line 1))))                 ; point onto the composing line
+(defun le::cci--compose-prompt-content (base-text region-ref)
+  "Return (STRING . POINT) for a prompt buffer's initial content.
+BASE-TEXT seeds the composing line (e.g. captured CLI prompt text, an
+existing draft, or the empty string).  REGION-REF, when non-nil, is a
+plist as returned by `le::cci--capture-region-ref' with an added
+:ref-string key (the already-formatted @-mention) — its :subject, if
+any, becomes a leading \"re: SUBJECT\" line, and :ref-string is
+appended after BASE-TEXT (trimmed of trailing whitespace) separated by
+a blank line.  POINT lands on the composing line: after the \"re:\"
+line when present, otherwise at the top; with no REGION-REF, POINT is
+at the end of BASE-TEXT."
+  (if region-ref
+      (let* ((subject (plist-get region-ref :subject))
+             (ref (plist-get region-ref :ref-string))
+             (heading (if subject (concat "re: " subject "\n") ""))
+             (body (concat heading (string-trim-right base-text) "\n\n" ref)))
+        (cons body (1+ (length heading))))
+    (cons base-text (1+ (length base-text)))))
 
-(defun le::cci--prefill-initial-text (text)
-  "Prefill the current (freshly created, empty) prompt buffer with TEXT.
-Point is left at the end of TEXT for continued editing."
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (insert text)
-    (goto-char (point-max))))
+(defun le::cci--apply-prompt-content (buf content)
+  "Replace BUF's text with (STRING . POINT) CONTENT, as from
+`le::cci--compose-prompt-content'."
+  (with-current-buffer buf
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (car content))
+      (goto-char (cdr content)))))
 
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
@@ -635,9 +641,7 @@ existing prompt buffer, so an in-progress draft is never clobbered."
                                                   (claude-code-ide-send-prompt text))
                                :header-line-default hdr))
                         (setq header-line-format hdr))
-                      (le::cci--history-init root)
-                      (when initial-text
-                        (le::cci--prefill-initial-text initial-text)))
+                      (le::cci--history-init root))
                     b))))
     (when region-ref
       (let ((file (plist-get region-ref :file)))
@@ -651,14 +655,20 @@ existing prompt buffer, so an in-progress draft is never clobbered."
            ((buffer-modified-p)
             (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
               (save-buffer)))))
-        (when (file-exists-p file)
-          (with-current-buffer buf
-            (le::cci--prefill-region-prompt
-             (plist-get region-ref :subject)
-             (le::cci--file-reference file
-                                      (plist-get region-ref :beg)
-                                      (plist-get region-ref :end)
-                                      root))))))
+        (if (file-exists-p file)
+            (setq region-ref
+                  (plist-put region-ref :ref-string
+                             (le::cci--file-reference file
+                                                      (plist-get region-ref :beg)
+                                                      (plist-get region-ref :end)
+                                                      root)))
+          (setq region-ref nil))))
+    (when (or (not existing) region-ref)
+      (let ((base-text (if existing
+                            (with-current-buffer buf (buffer-string))
+                          (or initial-text ""))))
+        (le::cci--apply-prompt-content
+         buf (le::cci--compose-prompt-content base-text region-ref))))
     (pop-to-buffer buf)))
 
 (provide 'le-cci-edit-prompt)
