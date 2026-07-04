@@ -11,12 +11,11 @@
 
 ;;; Commentary:
 
-;; Utility functions for Claude Code IDE integration: vterm helpers,
-;; server focus management, and prompt file setup.
+;; Utility functions for Claude Code IDE integration: vterm helpers
+;; and prompt file setup.
 
 ;;; Code:
 
-(declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
 (declare-function le::cci-edit-prompt "le-cci-edit-prompt" (force-choose &optional initial-text))
 (defvar claude-code-ide-mcp-server--sessions)
 (defvar claude-code-ide--routing-tokens)
