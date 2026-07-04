@@ -40,6 +40,8 @@ natural mapping.  Persists across `le::cci-edit-prompt' calls.")
 (declare-function org-before-first-heading-p "org")
 (declare-function org-back-to-heading "org")
 (declare-function org-get-heading "org")
+(declare-function org-get-todo-state "org")
+(declare-function org-up-heading-safe "org")
 
 (defun le::cci--live-cci-buffers ()
   "Return alist of (BUFFER-NAME . DIRECTORY) for all live CCI sessions."
@@ -143,6 +145,40 @@ buffer is not org-mode or the region starts above the first heading."
       (when (and (> re rb) (save-excursion (goto-char re) (bolp)))
         (setq end (1- end)))
       (list :file buffer-file-name :beg beg :end end :subject subject))))
+
+(defun le::cci--point-todo-doing-ancestors ()
+  "Return subjects of headings enclosing point whose TODO keyword is
+TODO or DOING, closest first.  Stars, keyword, priority, and tags are
+stripped.  Walks from the heading containing point up through each
+ancestor to the top, filtering to just the qualifying ones -- an
+ancestor without a TODO/DOING keyword is skipped but does not stop the
+walk.  Empty (nil) when the buffer isn't org-mode, point is above the
+first heading, or no ancestor qualifies."
+  (when (and (derived-mode-p 'org-mode) (not (org-before-first-heading-p)))
+    (save-excursion
+      (org-back-to-heading t)
+      (let (candidates)
+        (while (progn
+                 (when (member (org-get-todo-state) '("TODO" "DOING"))
+                   (push (string-trim
+                          (substring-no-properties
+                           (org-get-heading t t t t)))
+                         candidates))
+                 (org-up-heading-safe)))
+        (nreverse candidates)))))
+
+(defun le::cci--capture-point-subject ()
+  "Return (:subject S) using the TODO/DOING heading enclosing point, or
+nil if none qualifies.  When more than one ancestor heading qualifies,
+prompts for which one, defaulting to the closest.  Used as the
+fallback to `le::cci--capture-region-ref' when no region is active, so
+a \"re: SUBJECT\" line still gets added based on what task point is
+currently in."
+  (when-let* ((candidates (le::cci--point-todo-doing-ancestors)))
+    (list :subject
+          (if (cdr candidates)
+              (completing-read "Subject heading: " candidates nil t nil nil (car candidates))
+            (car candidates)))))
 
 (defun le::cci--file-reference (file beg end root)
   "Return the Claude Code @-mention \"@PATH#RANGE\" for FILE lines BEG..END.
@@ -612,7 +648,8 @@ content verbatim with point at the end; ignored when reusing an
 existing prompt buffer, so an in-progress draft is never clobbered."
   (interactive "P")
   (let* ((src-buf (current-buffer))
-         (region-ref (le::cci--capture-region-ref))
+         (region-ref (or (le::cci--capture-region-ref)
+                         (le::cci--capture-point-subject)))
          (target (le::cci--resolve-cci-target force-choose))
          (root (car target))
          (cci-buf (cdr target))
@@ -634,26 +671,27 @@ existing prompt buffer, so an in-progress draft is never clobbered."
                         (setq header-line-format hdr))
                       (le::cci--history-init root))
                     b))))
-    (when region-ref
-      (let ((file (plist-get region-ref :file)))
-        ;; Offer to save the source buffer before referencing it on disk —
-        ;; whether it's never been saved, or has unsaved edits.
-        (with-current-buffer src-buf
-          (cond
-           ((not (file-exists-p file))
-            (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
-              (save-buffer)))
-           ((buffer-modified-p)
-            (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
-              (save-buffer)))))
-        (if (file-exists-p file)
-            (setq region-ref
-                  (plist-put region-ref :ref-string
-                             (le::cci--file-reference file
-                                                      (plist-get region-ref :beg)
-                                                      (plist-get region-ref :end)
-                                                      root)))
-          (setq region-ref nil))))
+    (when-let* ((file (plist-get region-ref :file)))
+      ;; Offer to save the source buffer before referencing it on disk —
+      ;; whether it's never been saved, or has unsaved edits.  Absent
+      ;; entirely (not just nil) when region-ref came from
+      ;; `le::cci--capture-point-subject', which has no file range to offer.
+      (with-current-buffer src-buf
+        (cond
+         ((not (file-exists-p file))
+          (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
+            (save-buffer)))
+         ((buffer-modified-p)
+          (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
+            (save-buffer)))))
+      (if (file-exists-p file)
+          (setq region-ref
+                (plist-put region-ref :ref-string
+                           (le::cci--file-reference file
+                                                    (plist-get region-ref :beg)
+                                                    (plist-get region-ref :end)
+                                                    root)))
+        (setq region-ref nil)))
     (when (or (not existing) region-ref)
       (let* ((base-text (if existing
                              (with-current-buffer buf (buffer-string))
