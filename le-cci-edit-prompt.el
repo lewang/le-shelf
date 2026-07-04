@@ -173,15 +173,6 @@ at the end of BASE-TEXT."
         (cons body (1+ (length heading))))
     (cons base-text (1+ (length base-text)))))
 
-(defun le::cci--apply-prompt-content (buf content)
-  "Replace BUF's text with (STRING . POINT) CONTENT, as from
-`le::cci--compose-prompt-content'."
-  (with-current-buffer buf
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (insert (car content))
-      (goto-char (cdr content)))))
-
 ;;;###autoload
 (defun le::cci--register-session-id (routing-token session-id)
   "Push SESSION-ID onto the session ID stack for the buffer matching ROUTING-TOKEN.
@@ -664,11 +655,15 @@ existing prompt buffer, so an in-progress draft is never clobbered."
                                                       root)))
           (setq region-ref nil))))
     (when (or (not existing) region-ref)
-      (let ((base-text (if existing
-                            (with-current-buffer buf (buffer-string))
-                          (or initial-text ""))))
-        (le::cci--apply-prompt-content
-         buf (le::cci--compose-prompt-content base-text region-ref))))
+      (let* ((base-text (if existing
+                             (with-current-buffer buf (buffer-string))
+                           (or initial-text "")))
+             (content (le::cci--compose-prompt-content base-text region-ref)))
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (car content))
+            (goto-char (cdr content))))))
     (pop-to-buffer buf)))
 
 (provide 'le-cci-edit-prompt)
