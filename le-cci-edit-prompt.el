@@ -639,7 +639,8 @@ silently dropped."
                     b))))
     (when (and existing initial-text)
       (pop-to-buffer buf)
-      (user-error "CCI prompt buffer for %s already open; new text not applied" cci-name))
+      (user-error "CCI prompt buffer for %s is already open — new text not applied, to avoid clobbering its draft:\n%s"
+                  cci-name initial-text))
     (when region-ref
       (let ((file (plist-get region-ref :file)))
         ;; Offer to save the source buffer before referencing it on disk —

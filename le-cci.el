@@ -55,37 +55,18 @@ carries no session-identifying information."
               ((buffer-live-p buf)))
     buf))
 
-(defun le::cci--server-edit-quietly ()
-  "Call `server-edit', suppressing its \"When done...\" hint for just
-this connection rather than via `server-client-instructions' globally.
-A plain dynamic `let' cannot scope this: `server-visit-files' prints
-the hint *after* `server-switch-hook' (and thus this function) returns,
-so the mutation has to outlive our call and be undone later instead --
-a timer fired once the current command finishes restores it."
-  (let ((orig server-client-instructions))
-    (setq server-client-instructions nil)
-    (run-at-time 0 nil (lambda () (setq server-client-instructions orig))))
-  (server-edit))
-
 ;;;###autoload
 (defun le::claude-prompt-file-setup ()
   "When visiting a Claude CLI prompt temp file, redirect editing to
 `le::cci-edit-prompt' instead of editing the temp file directly.
 
-If a `*cci-prompt: ...*' buffer for the owning CCI session (identified
-via `le::cci--session-buffer-for-client') is already open, switches to
-it and leaves both it and the temp file untouched -- the CLI's own
-prompt is not cleared, since there's nowhere for its text to go
-without clobbering the existing draft.
-
-Otherwise: captures the file's current text, blanks and saves the file
-(so the CLI resumes with an empty prompt), and opens the CCI
-prompt-editing buffer prefilled with the captured text (targeting the
-owning session, falling back to `le::cci-edit-prompt''s own resolution
-when `le::cci--session-buffer-for-client' can't determine it).
-
-Either way, completes the emacsclient session for this buffer
-(equivalent to \\[server-edit]).
+Captures the file's current text, blanks and saves the file (so the
+CLI resumes with an empty prompt), opens the CCI prompt-editing buffer
+prefilled with the captured text (targeting the CCI session identified
+via `le::cci--session-buffer-for-client', falling back to
+`le::cci-edit-prompt''s own resolution when that's unavailable), then
+completes the emacsclient session for this buffer (equivalent to
+\\[server-edit]).
 
 Installed on `server-switch-hook' rather than `server-visit-hook':
 per `server-visit-files'/`server-execute' in server.el,
@@ -100,29 +81,21 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
                              (file-name-nondirectory (buffer-file-name))))
     (let* ((prompt-buf (current-buffer))
            (cci-buf (le::cci--session-buffer-for-client))
-           (existing-editor-buf
-            (when cci-buf
-              (get-buffer (format "*cci-prompt: %s*" (buffer-name cci-buf))))))
-      (if existing-editor-buf
-          (progn
-            (pop-to-buffer existing-editor-buf)
-            (message "CCI prompt buffer for %s already open; leaving CLI text in place"
-                     (buffer-name cci-buf)))
-        (let* ((text (le::cci--blank-prompt-file-and-capture))
-               (editor-buf (condition-case err
-                               (if cci-buf
-                                   (with-current-buffer cci-buf
-                                     (le::cci-edit-prompt nil text))
+           (text (le::cci--blank-prompt-file-and-capture))
+           (editor-buf (condition-case err
+                           (if cci-buf
+                               (with-current-buffer cci-buf
                                  (le::cci-edit-prompt nil text))
-                             (user-error
-                              (message "%s" (error-message-string err))
-                              nil))))
-          (when (and cci-buf (buffer-live-p editor-buf))
-            (with-current-buffer editor-buf
-              (setq-local le::cci--return-buffer cci-buf)))))
+                             (le::cci-edit-prompt nil text))
+                         (user-error
+                          (message "%s" (error-message-string err))
+                          nil))))
+      (when (and cci-buf (buffer-live-p editor-buf))
+        (with-current-buffer editor-buf
+          (setq-local le::cci--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
-          (le::cci--server-edit-quietly))))))
+          (server-edit))))))
 
 ;;;###autoload
 (add-hook 'server-switch-hook #'le::claude-prompt-file-setup)
