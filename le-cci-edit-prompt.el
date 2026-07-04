@@ -608,8 +608,11 @@ M-p/M-n traverse history from the latest session.  C-c C-c finishes.
 With prefix argument FORCE-CHOOSE, prompt for a CCI session and
 save the choice as a buffer-local override.
 INITIAL-TEXT, if non-nil, prefills a freshly created prompt buffer's
-content verbatim with point at the end; ignored when reusing an
-existing prompt buffer, so an in-progress draft is never clobbered."
+content verbatim with point at the end.  If a prompt buffer for the
+target CCI session is already open, INITIAL-TEXT is never applied (an
+in-progress draft is never clobbered) and a `user-error' is signaled
+instead, after switching to that buffer, so the caller's text isn't
+silently dropped."
   (interactive "P")
   (let* ((src-buf (current-buffer))
          (region-ref (le::cci--capture-region-ref))
@@ -634,6 +637,10 @@ existing prompt buffer, so an in-progress draft is never clobbered."
                         (setq header-line-format hdr))
                       (le::cci--history-init root))
                     b))))
+    (when (and existing initial-text)
+      (pop-to-buffer buf)
+      (user-error "CCI prompt buffer for %s is already open — new text not applied, to avoid clobbering its draft:\n%s"
+                  cci-name initial-text))
     (when region-ref
       (let ((file (plist-get region-ref :file)))
         ;; Offer to save the source buffer before referencing it on disk —

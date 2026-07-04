@@ -19,6 +19,7 @@
 (declare-function le::cci-edit-prompt "le-cci-edit-prompt" (force-choose &optional initial-text))
 (defvar claude-code-ide-mcp-server--sessions)
 (defvar claude-code-ide--routing-tokens)
+(defvar le::cci--return-buffer)
 
 ;;;###autoload
 (defun le::vterm-send-C-g ()
@@ -35,8 +36,6 @@ the CLI to re-read."
     (erase-buffer)
     (save-buffer)
     text))
-
-(defvar le::cci--return-buffer)
 
 (defun le::cci--session-buffer-for-client ()
   "Return the CCI session buffer for the emacsclient connection that
@@ -83,13 +82,17 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
     (let* ((prompt-buf (current-buffer))
            (cci-buf (le::cci--session-buffer-for-client))
            (text (le::cci--blank-prompt-file-and-capture))
-           (editor-buf (if cci-buf
-                           (with-current-buffer cci-buf
+           (editor-buf (condition-case err
+                           (if cci-buf
+                               (with-current-buffer cci-buf
+                                 (le::cci-edit-prompt nil text))
                              (le::cci-edit-prompt nil text))
-                         (le::cci-edit-prompt nil text))))
+                         (user-error
+                          (message "%s" (error-message-string err))
+                          nil))))
       (when (and cci-buf (buffer-live-p editor-buf))
         (with-current-buffer editor-buf
-          (setq le::cci--return-buffer cci-buf)))
+          (setq-local le::cci--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
           (server-edit))))))
