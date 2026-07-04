@@ -232,6 +232,15 @@ Deduplicates: if TEXT is already the most recent entry, skip."
 (defvar-local le::cci--st nil
   "Prompt buffer state, a `le::cci--state' struct.")
 
+(defvar-local le::cci--return-buffer nil
+  "Buffer to reselect on finish/cancel, in preference to the saved
+window-configuration restore, when that buffer still has a live
+window.  nil for prompt buffers opened the normal interactive way.
+Set externally by callers that pop this buffer up over an unrelated
+window layout (e.g. `le::claude-prompt-file-setup', which resolves
+this from a `claude-prompt-*.md' temp file with no meaningful window
+configuration of its own).")
+
 (defvar le::cci--history-batch-size 5
   "Number of history entries to load per batch.")
 
@@ -528,6 +537,15 @@ Updates `ring-index' in ST to track merge progress for lazy loading."
 
 ;;;; Major mode
 
+(defun le::cci--restore-window-on-exit (return-buf winconf)
+  "Select RETURN-BUF's window if it still has one, else restore WINCONF.
+Called after killing a finished/cancelled CCI prompt buffer."
+  (if-let* ((return-buf)
+            ((buffer-live-p return-buf))
+            (win (get-buffer-window return-buf)))
+      (select-window win)
+    (when winconf (set-window-configuration winconf))))
+
 (defun le::cci-prompt-finish ()
   "Accept the prompt and run the finish callback."
   (interactive)
@@ -536,11 +554,12 @@ Updates `ring-index' in ST to track merge progress for lazy loading."
          (root (le::cci--state-project-root st))
          (dir default-directory)
          (winconf (le::cci--state-saved-winconf st))
+         (return-buf le::cci--return-buffer)
          (callback (le::cci--state-finish-callback st)))
     (unless (string-empty-p text)
       (le::cci--ring-push root text))
     (kill-buffer (current-buffer))
-    (when winconf (set-window-configuration winconf))
+    (le::cci--restore-window-on-exit return-buf winconf)
     (when callback
       (let ((default-directory dir))
         (funcall callback text)))))
@@ -548,9 +567,10 @@ Updates `ring-index' in ST to track merge progress for lazy loading."
 (defun le::cci-prompt-cancel ()
   "Cancel the prompt buffer."
   (interactive)
-  (let ((winconf (le::cci--state-saved-winconf le::cci--st)))
+  (let ((winconf (le::cci--state-saved-winconf le::cci--st))
+        (return-buf le::cci--return-buffer))
     (kill-buffer (current-buffer))
-    (when winconf (set-window-configuration winconf))))
+    (le::cci--restore-window-on-exit return-buf winconf)))
 
 (defvar-keymap le::cci-prompt-mode-map
   :doc "Keymap for `le::cci-prompt-mode'."

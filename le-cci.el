@@ -36,6 +36,8 @@ the CLI to re-read."
     (save-buffer)
     text))
 
+(defvar le::cci--return-buffer)
+
 (defun le::cci--session-buffer-for-client ()
   "Return the CCI session buffer for the emacsclient connection that
 opened the current buffer, resolved via the connecting client's
@@ -80,11 +82,14 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
                              (file-name-nondirectory (buffer-file-name))))
     (let* ((prompt-buf (current-buffer))
            (cci-buf (le::cci--session-buffer-for-client))
-           (text (le::cci--blank-prompt-file-and-capture)))
-      (if cci-buf
-          (with-current-buffer cci-buf
-            (le::cci-edit-prompt nil text))
-        (le::cci-edit-prompt nil text))
+           (text (le::cci--blank-prompt-file-and-capture))
+           (editor-buf (if cci-buf
+                           (with-current-buffer cci-buf
+                             (le::cci-edit-prompt nil text))
+                         (le::cci-edit-prompt nil text))))
+      (when (and cci-buf (buffer-live-p editor-buf))
+        (with-current-buffer editor-buf
+          (setq le::cci--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
           (server-edit))))))
