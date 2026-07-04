@@ -23,11 +23,14 @@
 
 (defun le::cci--prompt-buffer-open-p ()
   "Return non-nil if a CCI prompt-editing buffer for the current CCI
-session buffer is already open.
-Called from a CCI session buffer (vterm or ghostel), so the session's
-own buffer name is all `le::cci-edit-prompt' needs to compute its
-compose buffer's name."
-  (get-buffer (format "*cci-prompt: %s*" (buffer-name))))
+session buffer is already open with a non-empty draft.
+An empty compose buffer has nothing to protect, so it doesn't count --
+Claude CLI's captured text is free to populate it as normal.  Called
+from a CCI session buffer (vterm or ghostel), so the session's own
+buffer name is all `le::cci-edit-prompt' needs to compute its compose
+buffer's name."
+  (when-let* ((buf (get-buffer (format "*cci-prompt: %s*" (buffer-name)))))
+    (> (buffer-size buf) 0)))
 
 ;;;###autoload
 (defun le::vterm-send-C-g ()
