@@ -213,7 +213,7 @@ at the end of BASE-TEXT."
   (if region-ref
       (let* ((subject (plist-get region-ref :subject))
              (ref (plist-get region-ref :ref-string))
-             (heading (if subject (concat "re: " subject "\n") ""))
+             (heading (if subject (concat "re: " subject "\n\n") ""))
              (body (concat heading (string-trim-right base-text) "\n\n" ref)))
         (cons body (1+ (length heading))))
     (cons base-text (1+ (length base-text)))))
