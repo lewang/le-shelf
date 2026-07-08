@@ -81,6 +81,15 @@ Only checks files present in both directories."
           (push id stale))))
     (nreverse stale)))
 
+(defun le-elpaca--summarize-names (ids max)
+  "Join package-ID symbols IDS by \", \", eliding past MAX as \"and N more\"."
+  (let ((n (length ids)))
+    (if (> n max)
+        (format "%s, and %d more"
+                (mapconcat #'symbol-name (seq-take ids max) ", ")
+                (- n max))
+      (mapconcat #'symbol-name ids ", "))))
+
 ;;;###autoload
 (defun le::elpaca-rebuild-stale ()
   "Detect and rebuild stale elpaca packages.
@@ -102,12 +111,17 @@ A package is stale if either:
                        (pcase (elpaca--status (cdr (assoc id (elpaca--queued))))
                          ('finished (push id finished))
                          ('failed (push id failed))))
-                     (message "Elpaca rebuild: %d finished%s"
+                     (setq finished (nreverse finished)
+                           failed (nreverse failed))
+                     (message "Elpaca rebuild: %d finished%s%s"
                               (length finished)
+                              (if finished
+                                  (format ": %s" (le-elpaca--summarize-names finished 7))
+                                "")
                               (if failed
                                   (format ", %d FAILED: %s"
                                           (length failed)
-                                          (mapconcat #'symbol-name (nreverse failed) ", "))
+                                          (mapconcat #'symbol-name failed ", "))
                                 "")))))
       (dolist (id stale)
         (elpaca-rebuild id))
