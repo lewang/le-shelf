@@ -621,7 +621,7 @@ Called after killing a finished/cancelled CCI prompt buffer."
   "C-c C-c" #'le::cci-prompt-finish
   "C-c C-k" #'le::cci-prompt-cancel)
 
-(define-derived-mode le::cci-prompt-mode text-mode "CCI-Prompt"
+(define-derived-mode le::cci-prompt-mode org-mode "CCI-Prompt"
   "Major mode for composing Claude Code prompts.
 \\[le::cci-prompt-finish] to accept, \\[le::cci-prompt-cancel] to cancel.
 \\[le::cci-history-previous]/\\[le::cci-history-next] for history.")
