@@ -186,12 +186,24 @@ LAYOUT is a plist with :cc-win, :top-left, and :bottom-left windows."
 
 ;;;###autoload
 (defun le::ide--file-in-project-p (file project-root)
-  "Return non-nil if FILE belongs exactly to the project at PROJECT-ROOT.
-Unlike `file-in-directory-p', this resolves FILE's own project and
-checks that its root matches PROJECT-ROOT, so files in nested
-sub-projects are excluded."
-  (when-let* ((proj (project-current nil (file-name-directory file))))
-    (file-equal-p (project-root proj) project-root)))
+  "Return non-nil if FILE belongs to the project at PROJECT-ROOT.
+Resolves FILE's own project and checks that its root matches
+PROJECT-ROOT, so files in nested sub-projects are excluded -- with one
+exception: when FILE's own project root satisfies
+`claude-code-ide-parent-session-predicate' (e.g. a `.le-playground'
+scratchpad worktree, which carries its own `.git' and so resolves as its
+own project) and sits directly inside PROJECT-ROOT, FILE counts as
+belonging to PROJECT-ROOT and thus qualifies for the top-left window.
+Reusing that predicate keeps the scratchpad-belongs-to-parent rule in one
+place -- the same knob that reparents a Claude session (see
+`claude-code-ide--maybe-resolve-parent')."
+  (when-let* ((proj (project-current nil (file-name-directory file)))
+              (root (project-root proj)))
+    (or (file-equal-p root project-root)
+        (and (bound-and-true-p claude-code-ide-parent-session-predicate)
+             (funcall claude-code-ide-parent-session-predicate root)
+             (file-equal-p (file-name-directory (directory-file-name root))
+                           project-root)))))
 
 ;;;###autoload
 (defun le::ide-reset (project-root)
