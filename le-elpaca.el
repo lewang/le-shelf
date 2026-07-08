@@ -113,16 +113,25 @@ A package is stale if either:
                          ('failed (push id failed))))
                      (setq finished (nreverse finished)
                            failed (nreverse failed))
-                     (message "Elpaca rebuild: %d finished%s%s"
-                              (length finished)
-                              (if finished
-                                  (format ": %s" (le-elpaca--summarize-names finished 7))
-                                "")
-                              (if failed
-                                  (format ", %d FAILED: %s"
-                                          (length failed)
-                                          (mapconcat #'symbol-name failed ", "))
-                                "")))))
+                     (let ((finished-msg
+                            (format "%d finished%s"
+                                    (length finished)
+                                    (if finished
+                                        (format ": %s"
+                                                (le-elpaca--summarize-names finished 7))
+                                      "")))
+                           ;; Failures are the important message: list every
+                           ;; failed package by name (uncapped) and lead with
+                           ;; them when present.
+                           (failed-msg
+                            (when failed
+                              (format "%d FAILED: %s"
+                                      (length failed)
+                                      (mapconcat #'symbol-name failed ", ")))))
+                       (message "Elpaca rebuild: %s"
+                                (if failed-msg
+                                    (concat failed-msg "; " finished-msg)
+                                  finished-msg))))))
       (dolist (id stale)
         (elpaca-rebuild id))
       (elpaca-process-queues))))
