@@ -81,14 +81,20 @@ Only checks files present in both directories."
           (push id stale))))
     (nreverse stale)))
 
-(defun le-elpaca--summarize-names (ids max)
-  "Join package-ID symbols IDS by \", \", eliding past MAX as \"and N more\"."
-  (let ((n (length ids)))
-    (if (> n max)
-        (format "%s, and %d more"
-                (mapconcat #'symbol-name (seq-take ids max) ", ")
-                (- n max))
-      (mapconcat #'symbol-name ids ", "))))
+(defun le-elpaca--summarize-names (ids max &optional face)
+  "Join package-ID symbols IDS by \", \", eliding past MAX as \"and N more\".
+MAX nil means no elision (list them all).  When FACE is non-nil, each
+shown name is propertized with it so it stands out in the echo area."
+  (let* ((n (length ids))
+         (elide (and max (> n max)))
+         (shown (if elide (seq-take ids max) ids))
+         (joined (mapconcat (lambda (id)
+                              (let ((name (symbol-name id)))
+                                (if face (propertize name 'face face) name)))
+                            shown ", ")))
+    (if elide
+        (format "%s, and %d more" joined (- n max))
+      joined)))
 
 ;;;###autoload
 (defun le::elpaca-rebuild-stale ()
@@ -118,16 +124,18 @@ A package is stale if either:
                                     (length finished)
                                     (if finished
                                         (format ": %s"
-                                                (le-elpaca--summarize-names finished 7))
+                                                (le-elpaca--summarize-names
+                                                 finished 7 'success))
                                       "")))
                            ;; Failures are the important message: list every
-                           ;; failed package by name (uncapped) and lead with
-                           ;; them when present.
+                           ;; failed package by name (uncapped, MAX nil) and
+                           ;; lead with them when present.
                            (failed-msg
                             (when failed
                               (format "%d FAILED: %s"
                                       (length failed)
-                                      (mapconcat #'symbol-name failed ", ")))))
+                                      (le-elpaca--summarize-names
+                                       failed nil 'error)))))
                        (message "Elpaca rebuild: %s"
                                 (if failed-msg
                                     (concat failed-msg "; " finished-msg)
