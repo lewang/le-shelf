@@ -146,8 +146,5 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
         (with-current-buffer prompt-buf
           (le::cci--server-edit-with-message "Editing with le::cci-edit-prompt"))))))
 
-;;;###autoload
-(add-hook 'server-switch-hook #'le::claude-prompt-file-setup)
-
 (provide 'le-cci)
 ;;; le-cci.el ends here
