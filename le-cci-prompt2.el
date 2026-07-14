@@ -18,7 +18,9 @@
 ;; written to disk the moment editing starts, so drafts survive
 ;; crashes and the log survives restarts.  Per-file TODO states record
 ;; each prompt's fate: EDITING -> COMMITTED (sent) or ABANDONED (kept
-;; on cancel); a cancelled draft can also be deleted outright.
+;; on cancel); a cancelled draft can also be deleted outright.  Each
+;; headline is titled with the bracketed timestamp of its latest
+;; state flip, mirroring the top LOGBOOK line.
 ;; The log file is a real denote note: `denote' creates it (denote is
 ;; a hard dependency now) inside the playground's denote silo,
 ;; .le-playground/denote/, which /playground-setup bootstraps along
@@ -49,7 +51,6 @@
 (require 'org)
 (require 'org-src)
 (require 'org-duration)
-(require 'iso8601)
 (require 'denote)
 
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
@@ -248,10 +249,6 @@ no REGION-REF, POINT is at the end of BASE-TEXT."
 
 ;;;; Log file management
 
-(defun le::cci-prompt2--denote-id (&optional time)
-  "Return a denote-style timestamp ID for TIME (default: now)."
-  (format-time-string denote-date-identifier-format time))
-
 (defun le::cci-prompt2--create-log-file (dir)
   "Create a new prompt-log org file in DIR via `denote'; return its path.
 DIR is the prompt-log/ subdirectory of the playground's denote silo.
@@ -311,76 +308,98 @@ file-local value cannot do this: `org-store-log-note' renders the
 stamp while the *Org Note* scratch buffer is current, where the
 log file's local variables are out of scope.")
 
-(defun le::cci-prompt2--unique-heading-id (file-buf)
-  "Return a denote-style ID unused by any heading in FILE-BUF.
-Same-second invocations collide on the timestamp; bump one second
-forward until the ID is free."
-  (with-current-buffer file-buf
-    (save-excursion
-      (save-restriction
-        (widen)
-        (let* ((time (current-time))
-               (id (le::cci-prompt2--denote-id time)))
-          (goto-char (point-min))
-          (while (re-search-forward
-                  (format "^\\* [A-Z]+ %s\\_>" (regexp-quote id)) nil t)
-            (setq time (time-add time 1)
-                  id (le::cci-prompt2--denote-id time))
-            (goto-char (point-min)))
-          id)))))
+(defun le::cci-prompt2--heading-flip-stamp ()
+  "Return the bracketed timestamp of the most recent state flip
+recorded in the LOGBOOK of the heading at point, brackets included --
+e.g. \"[2026-07-14 Tue 17:47:45]\" -- or nil when the drawer's top
+line is not a \"- State\" entry.  Only the top line is examined:
+org prepends the newest note, so right after a flip's log flush the
+line at `org-log-beginning' is that flip's.  This is what the
+headline mirrors -- after every flip the headline's stamp is
+rewritten to this value, so headline time == latest state change by
+construction, with no same-second formatting race."
+  (save-excursion
+    (org-back-to-heading t)
+    (goto-char (org-log-beginning))
+    (when (looking-at "[ \t]*- State \"[A-Z]+\".*\\(\\[[^]\n]+\\]\\)")
+      (match-string-no-properties 1))))
 
 (defun le::cci-prompt2--extract-subject (text)
   "Return the subject from TEXT's leading \"re: SUBJECT\" line, or nil."
   (when (string-match "\\`re: \\(.+\\)$" text)
     (string-trim (match-string 1 text))))
 
-(defun le::cci-prompt2--insert-heading (file-buf id subject text)
-  "Append a new EDITING heading for ID to FILE-BUF and save the file.
-SUBJECT, when non-nil, goes onto the headline as \"re: SUBJECT\".
+(defun le::cci-prompt2--insert-heading (file-buf subject text)
+  "Append a new EDITING heading to FILE-BUF and save the file.
+The headline's title is the bracketed stamp of its own EDITING flip,
+read back via `le::cci-prompt2--heading-flip-stamp' from the LOGBOOK
+line `org-todo' just wrote, so headline time and latest state change
+are identical by construction.  That stamp is also the heading's id
+for the rest of the edit session.  SUBJECT, when non-nil, follows it
+as \"re: SUBJECT\".
 The heading is inserted without a keyword and put into EDITING via
 `org-todo', so org's state-change machinery records the initial state
 in the LOGBOOK per the file's `(e!)' spec; literal keyword text would
-bypass the logging.
+bypass the logging.  `org-loop-over-headlines-in-active-region' is
+disabled around the flip: invoked from the log file's own buffer with
+an active region, `org-todo' would otherwise loop over the region's
+headings instead of flipping the one at point -- leaving this heading
+keyword-less and landing the flip on whichever heading the region
+loop found.
 TEXT seeds the src block body, escaped, with a trailing newline
 guaranteed.  The block carries the -i (preserve indentation) switch --
 without it, write-back would indent every line by
 `org-edit-src-content-indentation'.  The save is the crash-recovery
 point: the draft is on disk before the edit buffer even opens.
-Returns the buffer position of the block body's start."
+Returns (ID . BODY-BEG): the new heading's stamp id and the buffer
+position of the block body's start."
   (with-current-buffer file-buf
     (widen)
     (save-excursion
       (goto-char (point-max))
       (unless (bolp) (insert "\n"))
-      (insert (format "* %s%s\n" id
-                      (if subject (concat " re: " subject) "")))
-      (save-excursion
-        (forward-line -1)
-        (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats))
-          (org-todo "EDITING")
-          (when (bound-and-true-p org-log-setup)
-            (org-add-log-note))))
+      (insert "* \n")
+      (forward-line -1)
+      (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
+            (org-loop-over-headlines-in-active-region nil))
+        (org-todo "EDITING")
+        (when (bound-and-true-p org-log-setup)
+          (org-add-log-note)))
+      ;; The log-note flush may move point; the new heading is the
+      ;; buffer's last.
       (goto-char (point-max))
-      (unless (bolp) (insert "\n"))
-      (insert "#+begin_src le::cci-prompt2 -i\n")
-      (let ((body-beg (point)))
-        (unless (string-empty-p text)
-          (insert (org-escape-code-in-string
-                   (if (string-suffix-p "\n" text) text (concat text "\n")))))
-        (insert "#+end_src\n")
-        (save-buffer)
-        body-beg))))
+      (org-back-to-heading t)
+      (let ((id (or (le::cci-prompt2--heading-flip-stamp)
+                    ;; No log line only when the flip went unlogged
+                    ;; (logging misconfigured); stamp "now" instead.
+                    (format-time-string
+                     (format "[%s]"
+                             (cdr le::cci-prompt2--time-stamp-formats))))))
+        (org-edit-headline (if subject (format "%s re: %s" id subject) id))
+        (goto-char (point-max))
+        (unless (bolp) (insert "\n"))
+        (insert "#+begin_src le::cci-prompt2 -i\n")
+        (let ((body-beg (point)))
+          (unless (string-empty-p text)
+            (insert (org-escape-code-in-string
+                     (if (string-suffix-p "\n" text) text (concat text "\n")))))
+          (insert "#+end_src\n")
+          (save-buffer)
+          (cons id body-beg))))))
 
 (defun le::cci-prompt2--goto-own-heading (marker id)
   "Move point to the heading for ID in the current log-file buffer.
 MARKER (a copy of the edit buffer's block-begin marker) is the fast
 path: when it still points into this buffer and its heading carries
 ID, go there.  Falls back to searching for ID from the top -- the
-heading may have been hand-moved, or the marker dropped.  Returns
-non-nil iff point ends up on the heading; point is unchanged
-otherwise."
+heading may have been hand-moved, or the marker dropped.  Two drafts
+opened within the same second share a stamp id (nothing bumps them
+apart); the marker keeps each session on its own heading, and the
+top-scan fallback hitting the twin instead needs the marker dead too
+-- an accepted, vanishingly rare edge.  Returns non-nil iff point
+ends up on the heading; point is unchanged otherwise."
   (widen)
-  (let ((regexp (format "^\\* [A-Z]+ %s\\_>" (regexp-quote id)))
+  (let ((regexp (concat "^\\* [A-Z]+ " (regexp-quote id)))
         target)
     (when (and marker (eq (marker-buffer marker) (current-buffer)))
       (save-excursion
@@ -404,19 +423,39 @@ alone."
   (org-edit-headline (if subject (format "%s re: %s" id subject) id)))
 
 (defun le::cci-prompt2--flip-state-and-save (state)
-  "Set the heading at point to STATE, flush its log entry, and save.
+  "Set the heading at point to STATE, flush its log entry, refresh
+the headline's stamp to the new flip's, and save.
 With `!' logging, `org-todo' defers the state-change line to the
 global `post-command-hook' via `org-add-log-note' -- which never
 fires inside a command, so flush it by hand or the save would miss
 it.  `org-log-setup' is the pending-note flag; checking
 `post-command-hook' membership instead would be defeated by this
 buffer's buffer-local hook value shadowing the global one.
-The let gives the stamp second precision (see
-`le::cci-prompt2--time-stamp-formats')."
-  (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats))
-    (org-todo state)
-    (when (bound-and-true-p org-log-setup)
-      (org-add-log-note)))
+The lets give the stamp second precision (see
+`le::cci-prompt2--time-stamp-formats') and pin `org-todo' to the
+heading at point even when the buffer has an active region (see
+`le::cci-prompt2--insert-heading').  Afterward the headline's leading
+bracketed stamp is rewritten to the just-logged flip's, preserving
+any \"re: SUBJECT\" tail -- the headline always shows the most recent
+state change, identical to the top LOGBOOK line."
+  (org-back-to-heading t)
+  (let ((heading (point-marker)))
+    (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
+          (org-loop-over-headlines-in-active-region nil))
+      (org-todo state)
+      (when (bound-and-true-p org-log-setup)
+        (org-add-log-note)))
+    ;; The log-note flush may move point; the marker survives the
+    ;; drawer insertion below the headline.
+    (goto-char heading)
+    (set-marker heading nil))
+  (when-let* ((stamp (le::cci-prompt2--heading-flip-stamp)))
+    (org-edit-headline
+     (replace-regexp-in-string "\\`\\[[^]\n]+\\]"
+                               stamp
+                               (substring-no-properties
+                                (org-get-heading t t t t))
+                               t t)))
   (save-buffer))
 
 (defun le::cci-prompt2--count-editing-siblings (file-buf own-id)
@@ -428,7 +467,7 @@ The let gives the stamp second precision (see
         (goto-char (point-min))
         (let ((count 0))
           (while (re-search-forward
-                  "^\\* EDITING \\([0-9]\\{8\\}T[0-9]\\{6\\}\\)\\_>" nil t)
+                  "^\\* EDITING \\(\\[[^]\n]+\\]\\)" nil t)
             (unless (equal (match-string-no-properties 1) own-id)
               (cl-incf count)))
           count)))))
@@ -475,7 +514,7 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
   "State for a prompt edit buffer."
   (cci-buffer nil :documentation "Target CCI session buffer.")
   (root nil :documentation "Expanded project root the prompt targets.")
-  (heading-id nil :documentation "Denote-style ID of this prompt's heading.")
+  (heading-id nil :documentation "Bracketed flip-stamp id of this prompt's heading, e.g. \"[2026-07-14 Tue 17:47:45]\" -- its EDITING flip time, stable for the whole edit session (the headline only changes again at the terminal flip, after which nothing looks it up).")
   (file-path nil :documentation "Path of the log file the heading lives in.")
   (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
@@ -605,46 +644,43 @@ newline."
           (string-trim-right
            (or (org-element-property :value el) "")))))))
 
-(defun le::cci-prompt2--id-time (id)
-  "Return denote-style ID's time as float epoch seconds."
-  (float-time (encode-time (iso8601-parse id))))
-
-(defun le::cci-prompt2--committed-flip-time (beg end)
-  "Return the COMMITTED state-flip time logged between BEG and END,
-as float epoch seconds, or nil when no LOGBOOK line records one.
-Parses the stamp itself: org's own timestamp parser drops the seconds
-this file's flips carry (see `le::cci-prompt2--time-stamp-formats'),
-and those seconds are what keep the flip inside
+(defun le::cci-prompt2--stamp-time (stamp)
+  "Return bracketed STAMP's time as float epoch seconds, or nil.
+STAMP looks like \"[2026-07-14 Tue 17:47:45]\"; the seconds field is
+optional.  Parsed by hand: org's own timestamp parser drops the
+seconds these stamps carry (see
+`le::cci-prompt2--time-stamp-formats'), and for a COMMITTED heading
+those seconds are what keep its flip time inside
 `le::cci-prompt2--dedup-window'.  Minute-precision stamps (from
 before seconds shipped) still parse -- they order fine, they just
 cannot dedupe."
-  (save-excursion
-    (goto-char beg)
-    (when (re-search-forward
-           (concat "^[ \t]*- State \"COMMITTED\".*"
-                   "\\[\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)"
-                   " [[:alpha:]]+ \\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)"
-                   "\\(?::\\([0-9]\\{2\\}\\)\\)?\\]")
-           end t)
-      (float-time
-       (encode-time
-        (list (if (match-string 6) (string-to-number (match-string 6)) 0)
-              (string-to-number (match-string 5))
-              (string-to-number (match-string 4))
-              (string-to-number (match-string 3))
-              (string-to-number (match-string 2))
-              (string-to-number (match-string 1))
-              nil -1 nil))))))
+  (when (string-match
+         (concat "\\`\\[\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)"
+                 " [[:alpha:]]+ \\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)"
+                 "\\(?::\\([0-9]\\{2\\}\\)\\)?\\]\\'")
+         stamp)
+    (float-time
+     (encode-time
+      (list (if (match-string 6 stamp)
+                (string-to-number (match-string 6 stamp))
+              0)
+            (string-to-number (match-string 5 stamp))
+            (string-to-number (match-string 4 stamp))
+            (string-to-number (match-string 3 stamp))
+            (string-to-number (match-string 2 stamp))
+            (string-to-number (match-string 1 stamp))
+            nil -1 nil)))))
 
 (defun le::cci-prompt2--collect-entries ()
   "Collect entries from this edit buffer's log file.
 Returns plists (:id ID :state STATE :text TEXT :ts TS), newest first.
-TS is the COMMITTED flip time when the heading is COMMITTED and its
-LOGBOOK records one (the dedup key against Claude's own history),
-else the heading ID's time.  The current heading is excluded;
-EDITING headings whose block is open in another edit buffer are
-skipped with a message, since recalling them here would fork an
-in-progress draft."
+ID is the headline's bracketed stamp; TS is its parsed time -- the
+heading's most recent state change, since the headline mirrors the
+top LOGBOOK line (for a COMMITTED heading that flip time is the
+dedup key against Claude's own history).  The current heading is
+excluded; EDITING headings whose block is open in another edit
+buffer are skipped with a message, since recalling them here would
+fork an in-progress draft."
   (let* ((st le::cci-prompt2--st)
          (own-id (le::cci-prompt2--state-heading-id st))
          (src-buf (marker-buffer org-src--beg-marker)))
@@ -660,7 +696,7 @@ in-progress draft."
             (widen)
             (goto-char (point-min))
             (while (re-search-forward
-                    "^\\* \\([A-Z]+\\) \\([0-9]\\{8\\}T[0-9]\\{6\\}\\)\\_>" nil t)
+                    "^\\* \\([A-Z]+\\) \\(\\[[^]\n]+\\]\\)" nil t)
               (let ((state (match-string-no-properties 1))
                     (id (match-string-no-properties 2))
                     (heading-beg (line-beginning-position))
@@ -676,12 +712,9 @@ in-progress draft."
                   (cl-incf skipped))
                  (t
                   (when-let* ((text (le::cci-prompt2--subtree-block-text
-                                     heading-beg subtree-end)))
-                    (push (list :id id :state state :text text
-                                :ts (or (and (equal state "COMMITTED")
-                                             (le::cci-prompt2--committed-flip-time
-                                              heading-beg subtree-end))
-                                        (le::cci-prompt2--id-time id)))
+                                     heading-beg subtree-end))
+                              (ts (le::cci-prompt2--stamp-time id)))
+                    (push (list :id id :state state :text text :ts ts)
                           entries))))
                 (goto-char subtree-end))))))
       (when (> skipped 0)
@@ -954,9 +987,10 @@ seeds the draft.  Returns the edit buffer."
            (subject (le::cci-prompt2--extract-subject (car content)))
            (path (le::cci-prompt2--log-file root))
            (file-buf (find-file-noselect path))
-           (id (le::cci-prompt2--unique-heading-id file-buf))
-           (body-pos (le::cci-prompt2--insert-heading
-                      file-buf id subject (car content)))
+           (inserted (le::cci-prompt2--insert-heading
+                      file-buf subject (car content)))
+           (id (car inserted))
+           (body-pos (cdr inserted))
            (siblings (le::cci-prompt2--count-editing-siblings file-buf id))
            edit-buf)
       (with-current-buffer file-buf
