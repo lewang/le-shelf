@@ -771,7 +771,10 @@ seeds the draft.  Returns the edit buffer."
         (goto-char body-pos)
         (let ((org-src-window-setup 'other-window))
           (org-edit-src-code nil (format "*cci-prompt2: %s*"
-                                         (buffer-name cci-buf))))
+                                         (file-name-nondirectory
+                                          (directory-file-name
+                                           (buffer-local-value
+                                            'default-directory cci-buf))))))
         ;; `org-edit-src-code' pops to the edit buffer, making it current
         ;; for the rest of this body.
         (setq edit-buf (current-buffer)))
