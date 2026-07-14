@@ -273,7 +273,9 @@ project, so the file carries no tags."
         (denote-front-matter-components-present-even-if-empty-value
          '(title date identifier)))
     (save-window-excursion
-      (denote "claude-code-prompt-log" nil 'org dir nil
+      ;; Human-readable TITLE goes in the front matter verbatim; denote
+      ;; sluggifies it to claude-code-prompt-log for the file name.
+      (denote "Claude Code prompt log" nil 'org dir nil
               "#+todo: EDITING(e!) | COMMITTED(c!) ABANDONED(a!)\n"))))
 
 (defun le::cci-prompt2--log-file (root)
