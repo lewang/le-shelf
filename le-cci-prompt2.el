@@ -305,6 +305,10 @@ forward until the ID is free."
 (defun le::cci-prompt2--insert-heading (file-buf id subject text)
   "Append a new EDITING heading for ID to FILE-BUF and save the file.
 SUBJECT, when non-nil, goes onto the headline as \"re: SUBJECT\".
+The heading is inserted without a keyword and put into EDITING via
+`org-todo', so org's state-change machinery records the initial state
+in the LOGBOOK per the file's `(e!)' spec; literal keyword text would
+bypass the logging.
 TEXT seeds the src block body, escaped, with a trailing newline
 guaranteed.  The block carries the -i (preserve indentation) switch --
 without it, write-back would indent every line by
@@ -316,9 +320,16 @@ Returns the buffer position of the block body's start."
     (save-excursion
       (goto-char (point-max))
       (unless (bolp) (insert "\n"))
-      (insert (format "* EDITING %s%s\n" id
-                      (if subject (concat " re: " subject) ""))
-              "#+begin_src le::cci-prompt2 -i\n")
+      (insert (format "* %s%s\n" id
+                      (if subject (concat " re: " subject) "")))
+      (save-excursion
+        (forward-line -1)
+        (org-todo "EDITING")
+        (when (bound-and-true-p org-log-setup)
+          (org-add-log-note)))
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert "#+begin_src le::cci-prompt2 -i\n")
       (let ((body-beg (point)))
         (unless (string-empty-p text)
           (insert (org-escape-code-in-string
