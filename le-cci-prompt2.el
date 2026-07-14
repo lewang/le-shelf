@@ -1,4 +1,4 @@
-;;; le-cci-prompt2.el --- Claude Code prompt editor with org-file history  -*- lexical-binding: t; -*-
+;;; le-cci-prompt2.el --- Claude Code prompt editor with an org-file prompt log  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 
@@ -13,11 +13,16 @@
 
 ;; v2 of the Claude Code prompt composer (v1: le-cci-edit-prompt.el,
 ;; kept in-tree as reference).  Every prompt is a level-1 org heading
-;; in the project's .le-playground/prompts/<ts>--claude-code-prompt.org
-;; file, written to disk the moment editing starts, so drafts survive
-;; crashes and history survives restarts.  Per-file TODO states record
+;; in the project's prompt-log file --
+;; .le-playground/denote/prompt-log/<ts>--claude-code-prompt-log.org --
+;; written to disk the moment editing starts, so drafts survive
+;; crashes and the log survives restarts.  Per-file TODO states record
 ;; each prompt's fate: EDITING -> COMMITTED (sent) or ABANDONED (kept
 ;; on cancel); a cancelled draft can also be deleted outright.
+;; The log file is a real denote note: `denote' creates it (denote is
+;; a hard dependency now) inside the playground's denote silo,
+;; .le-playground/denote/, which /playground-setup bootstraps along
+;; with a .dir-locals.el scoping interactive denote commands there.
 ;;
 ;; Editing happens in a real `org-edit-special' src-edit buffer: the
 ;; block language `le::cci-prompt2' resolves to `le::cci-prompt2-mode'
@@ -26,7 +31,7 @@
 ;; C-c C-k cancels -- the same muscle memory as org-src, whose own
 ;; bindings are shadowed per-buffer via
 ;; `minor-mode-overriding-map-alist' (no advice anywhere).  M-p/M-n
-;; recall earlier prompts from the history file, merged with the
+;; recall earlier prompts from the log file, merged with the
 ;; project's entries in Claude Code's own ~/.claude/history.jsonl
 ;; (pseudo-state CLI) so prompts typed straight into the CLI are
 ;; recallable too.  A prompt committed here lands in both stores; the
@@ -45,6 +50,7 @@
 (require 'org-src)
 (require 'org-duration)
 (require 'iso8601)
+(require 'denote)
 
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide")
@@ -240,52 +246,57 @@ no REGION-REF, POINT is at the end of BASE-TEXT."
         (cons body (1+ (length heading))))
     (cons base-text (1+ (length base-text)))))
 
-;;;; History file management
+;;;; Log file management
 
 (defun le::cci-prompt2--denote-id (&optional time)
   "Return a denote-style timestamp ID for TIME (default: now)."
-  (format-time-string "%Y%m%dT%H%M%S" time))
+  (format-time-string denote-date-identifier-format time))
 
-(defun le::cci-prompt2--filetag (root)
-  "Return an org-tag-safe token identifying ROOT.
-Org tags allow only alphanumerics, _, @, #, and % -- every other
-character of the expanded path is replaced with an underscore."
-  (replace-regexp-in-string "[^[:alnum:]_@#%]" "_"
-                            (directory-file-name (expand-file-name root))))
+(defun le::cci-prompt2--create-log-file (dir)
+  "Create a new prompt-log org file in DIR via `denote'; return its path.
+DIR is the prompt-log/ subdirectory of the playground's denote silo.
+`denote-directory' is let-bound to that silo so DIR resolves inside
+it -- otherwise `denote' silently falls back to the global notes
+directory.  The per-file `#+todo:' state sequence rides in as denote's
+TEMPLATE string.  `denote-kill-buffers' makes denote save and kill the
+buffer it visits: denote visits the file *before* inserting the front
+matter, so a surviving buffer would have initialized `org-mode'
+without the `#+todo:' line and its EDITING/COMMITTED/ABANDONED
+keywords would be dead -- the caller's own `find-file-noselect'
+re-visit picks them up fresh.  The `save-window-excursion' contains
+that visit's window switch (`denote' uses `find-file').  Dropping
+`keywords' from the always-present components removes the empty
+`#+filetags:' line -- the silo's location already identifies the
+project, so the file carries no tags."
+  (let ((denote-directory (file-name-directory (directory-file-name dir)))
+        (denote-kill-buffers 'on-creation)
+        (denote-front-matter-components-present-even-if-empty-value
+         '(title date identifier)))
+    (save-window-excursion
+      (denote "claude-code-prompt-log" nil 'org dir nil
+              "#+todo: EDITING(e!) | COMMITTED(c!) ABANDONED(a!)\n"))))
 
-(defun le::cci-prompt2--create-history-file (dir root)
-  "Create a new prompt-history org file in DIR for project ROOT.
-Writes denote-style front matter by hand (denote itself is not a
-dependency), including the per-file `#+todo:' state sequence so the
-EDITING/COMMITTED/ABANDONED keywords are live as soon as the file is
-first visited.  Returns the new file's path."
-  (let* ((id (le::cci-prompt2--denote-id))
-         (path (expand-file-name (concat id "--claude-code-prompt.org") dir)))
-    (with-temp-file path
-      (insert "#+title:      claude-code-prompt\n"
-              (format "#+date:       %s\n"
-                      (format-time-string "[%Y-%m-%d %a %H:%M]"))
-              (format "#+filetags:   :%s:\n" (le::cci-prompt2--filetag root))
-              (format "#+identifier: %s\n" id)
-              "#+todo: EDITING(e!) | COMMITTED(c!) ABANDONED(a!)\n\n"))
-    path))
-
-(defun le::cci-prompt2--history-file (root)
-  "Return the newest prompt-history file for project ROOT, creating one
-when none exists.  `.le-playground/' is a hard prerequisite; the
-prompts/ subdirectory is created on demand.  Newest is by filename --
-denote-style timestamp prefixes sort chronologically."
+(defun le::cci-prompt2--log-file (root)
+  "Return the newest prompt-log file for project ROOT, creating one
+when none exists.  `.le-playground/' and its denote/ silo are hard
+prerequisites (both bootstrapped by /playground-setup); the
+prompt-log/ subdirectory is created on demand.  Newest is by
+filename -- denote-style timestamp prefixes sort chronologically."
   (let ((playground (expand-file-name ".le-playground" root)))
     (unless (file-directory-p playground)
       (user-error "No .le-playground/ in %s -- run /playground-setup first" root))
-    (let ((dir (expand-file-name "prompts" playground)))
-      (make-directory dir t)
-      (or (car (last (directory-files
-                      dir t
-                      "\\`[0-9]\\{8\\}T[0-9]\\{6\\}--claude-code-prompt\\.org\\'")))
-          (le::cci-prompt2--create-history-file dir root)))))
+    (let ((silo (expand-file-name "denote" playground)))
+      (unless (file-directory-p silo)
+        (user-error "No denote silo in %s -- re-run /playground-setup to add it"
+                    playground))
+      (let ((dir (expand-file-name "prompt-log" silo)))
+        (make-directory dir t)
+        (or (car (last (directory-files
+                        dir t
+                        "\\`[0-9]\\{8\\}T[0-9]\\{6\\}--claude-code-prompt-log\\.org\\'")))
+            (le::cci-prompt2--create-log-file dir))))))
 
-;;;; Heading bookkeeping (all run in the history file buffer)
+;;;; Heading bookkeeping (all run in the log file buffer)
 
 (defconst le::cci-prompt2--time-stamp-formats
   '("%Y-%m-%d %a" . "%Y-%m-%d %a %H:%M:%S")
@@ -296,7 +307,7 @@ carry seconds -- the COMMITTED flip time is deduped against
 eat most of `le::cci-prompt2--dedup-window'.  A buffer-local or
 file-local value cannot do this: `org-store-log-note' renders the
 stamp while the *Org Note* scratch buffer is current, where the
-history file's local variables are out of scope.")
+log file's local variables are out of scope.")
 
 (defun le::cci-prompt2--unique-heading-id (file-buf)
   "Return a denote-style ID unused by any heading in FILE-BUF.
@@ -359,7 +370,7 @@ Returns the buffer position of the block body's start."
         body-beg))))
 
 (defun le::cci-prompt2--goto-own-heading (marker id)
-  "Move point to the heading for ID in the current history-file buffer.
+  "Move point to the heading for ID in the current log-file buffer.
 MARKER (a copy of the edit buffer's block-begin marker) is the fast
 path: when it still points into this buffer and its heading carries
 ID, go there.  Falls back to searching for ID from the top -- the
@@ -434,7 +445,7 @@ The block language `le::cci-prompt2' resolves here via
 picks this mode with no `org-src-lang-modes' entry.  C-c \\=' commits
 \(sends the prompt), C-c C-k cancels;
 \\[le::cci-prompt2-history-previous]/\\[le::cci-prompt2-history-next] \
-browse other prompts in the history file.")
+browse earlier prompts (log file merged with CLI history).")
 
 (defvar-keymap le::cci-prompt2--edit-map
   :doc "Overrides for `org-src-mode-map' in prompt edit buffers.
@@ -442,7 +453,7 @@ Installed per-buffer via `minor-mode-overriding-map-alist' -- as a
 minor-mode map, `org-src-mode-map' would otherwise shadow any
 major-mode binding of these keys.  The parent keeps the rest of
 org-src-mode's bindings (notably C-x C-s = `org-edit-src-save', i.e.
-write back and save the history file mid-edit) reachable."
+write back and save the log file mid-edit) reachable."
   :parent org-src-mode-map
   "C-c '" #'le::cci-prompt2-commit
   "C-c C-k" #'le::cci-prompt2-cancel)
@@ -463,7 +474,7 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
   (cci-buffer nil :documentation "Target CCI session buffer.")
   (root nil :documentation "Expanded project root the prompt targets.")
   (heading-id nil :documentation "Denote-style ID of this prompt's heading.")
-  (file-path nil :documentation "Path of the history file the heading lives in.")
+  (file-path nil :documentation "Path of the log file the heading lives in.")
   (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
   (hist-saved-input nil :documentation "Draft text stashed before history navigation.")
@@ -495,7 +506,7 @@ SIBLINGS is the number of other EDITING headings at open time."
 One JSON object per line for every prompt submitted in any project:
 display, pastedContents, timestamp (epoch ms), project (the expanded
 root, no trailing slash).  Merged into M-p/M-n so prompts typed
-straight into the CLI -- or predating the org history file -- are
+straight into the CLI -- or predating the org log file -- are
 still recallable.")
 
 (defconst le::cci-prompt2--dedup-window 5.0
@@ -624,7 +635,7 @@ cannot dedupe."
               nil -1 nil))))))
 
 (defun le::cci-prompt2--collect-entries ()
-  "Collect history entries from this edit buffer's history file.
+  "Collect entries from this edit buffer's log file.
 Returns plists (:id ID :state STATE :text TEXT :ts TS), newest first.
 TS is the COMMITTED flip time when the heading is COMMITTED and its
 LOGBOOK records one (the dedup key against Claude's own history),
@@ -636,7 +647,7 @@ in-progress draft."
          (own-id (le::cci-prompt2--state-heading-id st))
          (src-buf (marker-buffer org-src--beg-marker)))
     (unless (buffer-live-p src-buf)
-      (user-error "History file buffer was killed; reopen %s"
+      (user-error "Log file buffer was killed; reopen %s"
                   (le::cci-prompt2--state-file-path st)))
     (let ((busy (le::cci-prompt2--busy-positions src-buf))
           (skipped 0)
@@ -731,7 +742,7 @@ Sub-minute ages read \"less than 1 min ago\"; longer ages go through
 
 (defun le::cci-prompt2-history-previous ()
   "Show the previous (older) prompt from the merged history
-\(history file + Claude's own ~/.claude/history.jsonl).
+\(log file + Claude's own ~/.claude/history.jsonl).
 The first invocation stashes the in-progress draft;
 \\[le::cci-prompt2-history-next] past the newest entry restores it."
   (interactive)
@@ -757,7 +768,7 @@ The first invocation stashes the in-progress draft;
 (defun le::cci-prompt2-history-next ()
   "Show the next (newer) prompt, or restore the stashed draft.
 Returning to the draft clears the collected entries, so the next
-\\[le::cci-prompt2-history-previous] re-reads the history file."
+\\[le::cci-prompt2-history-previous] re-reads the log file."
   (interactive)
   (let ((st le::cci-prompt2--st))
     (unless (and st (org-src-edit-buffer-p))
@@ -801,7 +812,7 @@ copy when done."
                  st)
       (user-error "Not in a CCI prompt edit buffer"))
     (unless (buffer-live-p (marker-buffer org-src--beg-marker))
-      (user-error "History file buffer was killed; draft only exists in this buffer"))
+      (user-error "Log file buffer was killed; draft only exists in this buffer"))
     (list :cci-buf (le::cci-prompt2--state-cci-buffer st)
           :root (le::cci-prompt2--state-root st)
           :id (le::cci-prompt2--state-heading-id st)
@@ -828,11 +839,11 @@ send flips the state."
       (user-error "Empty prompt -- C-c C-k to discard"))
     (let ((org-src-window-setup 'current-window))
       (org-edit-src-exit))
-    ;; Current buffer is now the history file, write-back applied.
+    ;; Current buffer is now the log file, write-back applied.
     (let ((found (le::cci-prompt2--goto-own-heading mk id)))
       (if found
           (le::cci-prompt2--set-heading-subject id subject)
-        (message "Heading %s not found in history file; state not updated" id))
+        (message "Heading %s not found in log file; state not updated" id))
       (save-buffer)
       (condition-case err
           (progn
@@ -854,7 +865,7 @@ send flips the state."
 
 (defun le::cci-prompt2-cancel ()
   "Cancel the edit.
-A non-empty draft can be kept in the history file as ABANDONED;
+A non-empty draft can be kept in the log file as ABANDONED;
 answering no -- or an empty draft -- deletes its heading outright.
 The question comes before any teardown, so \\[keyboard-quit] aborts
 with the edit buffer untouched."
@@ -865,7 +876,7 @@ with the edit buffer untouched."
          (mk (plist-get ctx :marker))
          (subject (le::cci-prompt2--extract-subject text))
          (keep (and (not (string-empty-p text))
-                    (y-or-n-p "Keep draft in history as ABANDONED? (n deletes it) "))))
+                    (y-or-n-p "Keep draft in log as ABANDONED? (n deletes it) "))))
     (if keep
         (progn
           (let ((org-src-window-setup 'current-window))
@@ -874,7 +885,7 @@ with the edit buffer untouched."
               (progn
                 (le::cci-prompt2--set-heading-subject id subject)
                 (le::cci-prompt2--flip-state-and-save "ABANDONED"))
-            (message "Heading %s not found in history file; state not updated" id)
+            (message "Heading %s not found in log file; state not updated" id)
             (save-buffer)))
       (let ((org-src-window-setup 'current-window))
         (org-edit-src-abort))
@@ -884,7 +895,7 @@ with the edit buffer untouched."
               (delete-region (point)
                              (save-excursion (org-end-of-subtree t t) (point)))
               (save-buffer))
-          (message "Heading %s not found in history file; nothing deleted" id))))
+          (message "Heading %s not found in log file; nothing deleted" id))))
     (set-marker mk nil)
     (le::cci-prompt2--restore-window-on-exit
      (plist-get ctx :return-buf) (plist-get ctx :winconf))))
@@ -895,11 +906,12 @@ with the edit buffer untouched."
 (defun le::cci-prompt2-edit (force-choose &optional initial-text)
   "Open an org src edit buffer for composing a Claude Code prompt.
 Every invocation appends a fresh EDITING heading to the project's
-prompt-history file (created on demand under .le-playground/prompts/)
-and opens its block via `org-edit-src-code' -- the draft is on disk
-from the first moment.  C-c \\=' sends it and marks the heading
-COMMITTED; C-c C-k cancels, optionally keeping it as ABANDONED;
-M-p/M-n recall other prompts from the file.
+prompt-log file (created on demand under
+.le-playground/denote/prompt-log/) and opens its block via
+`org-edit-src-code' -- the draft is on disk from the first moment.
+C-c \\=' sends it and marks the heading COMMITTED; C-c C-k cancels,
+optionally keeping it as ABANDONED; M-p/M-n recall earlier prompts
+\(the log merged with CLI history).
 
 With prefix argument FORCE-CHOOSE, prompt for a CCI session and save
 the choice as a buffer-local override.  INITIAL-TEXT, if non-nil,
@@ -938,7 +950,7 @@ seeds the draft.  Returns the edit buffer."
     (let* ((content (le::cci-prompt2--compose-prompt-content
                      (or initial-text "") region-ref))
            (subject (le::cci-prompt2--extract-subject (car content)))
-           (path (le::cci-prompt2--history-file root))
+           (path (le::cci-prompt2--log-file root))
            (file-buf (find-file-noselect path))
            (id (le::cci-prompt2--unique-heading-id file-buf))
            (body-pos (le::cci-prompt2--insert-heading
