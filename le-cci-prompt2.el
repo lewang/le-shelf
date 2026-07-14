@@ -37,6 +37,8 @@
 (require 'cl-lib)
 (require 'org)
 (require 'org-src)
+(require 'org-duration)
+(require 'iso8601)
 
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide")
@@ -539,6 +541,17 @@ here would fork an in-progress draft."
         (message "Skipped %d EDITING heading(s) open in other edit buffers" skipped))
       entries)))
 
+(defun le::cci-prompt2--age-string (id)
+  "Return a relative age like \"2:46 ago\" for denote-style ID.
+Sub-minute ages read \"less than 1 min ago\"; longer ages go through
+`org-duration-from-minutes' (h:mm by default, days per
+`org-duration-format')."
+  (let* ((time (encode-time (iso8601-parse id)))
+         (mins (floor (/ (float-time (time-since time)) 60))))
+    (if (< mins 1)
+        "less than 1 min ago"
+      (format "%s ago" (org-duration-from-minutes mins)))))
+
 (defun le::cci-prompt2--show-history-entry ()
   "Display the current history entry in the edit buffer."
   (let* ((st le::cci-prompt2--st)
@@ -550,7 +563,8 @@ here would fork an in-progress draft."
     (setq header-line-format
           (format " History [%d/%d] %s %s    (M-p older, M-n newer)"
                   (1+ pos) (length entries)
-                  (plist-get entry :state) (plist-get entry :id)))))
+                  (plist-get entry :state)
+                  (le::cci-prompt2--age-string (plist-get entry :id))))))
 
 (defun le::cci-prompt2-history-previous ()
   "Show the previous (older) prompt from the history file.
