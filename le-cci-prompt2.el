@@ -26,7 +26,13 @@
 ;; C-c C-k cancels -- the same muscle memory as org-src, whose own
 ;; bindings are shadowed per-buffer via
 ;; `minor-mode-overriding-map-alist' (no advice anywhere).  M-p/M-n
-;; recall earlier prompts from the history file.
+;; recall earlier prompts from the history file, merged with the
+;; project's entries in Claude Code's own ~/.claude/history.jsonl
+;; (pseudo-state CLI) so prompts typed straight into the CLI are
+;; recallable too.  A prompt committed here lands in both stores; the
+;; merge drops the CLI twin when its timestamp falls within seconds
+;; of the heading's COMMITTED flip -- which is why the LOGBOOK stamps
+;; carry second precision.
 ;;
 ;; The CCI-session targeting, region/subject capture, and window-focus
 ;; behavior are copied from v1 rather than shared, so v1 can later be
@@ -281,6 +287,17 @@ denote-style timestamp prefixes sort chronologically."
 
 ;;;; Heading bookkeeping (all run in the history file buffer)
 
+(defconst le::cci-prompt2--time-stamp-formats
+  '("%Y-%m-%d %a" . "%Y-%m-%d %a %H:%M:%S")
+  "`org-time-stamp-formats' with seconds on the date-time format.
+Let-bound around each state flip so the LOGBOOK \"- State\" stamps
+carry seconds -- the COMMITTED flip time is deduped against
+~/.claude/history.jsonl entry timestamps, and minute precision would
+eat most of `le::cci-prompt2--dedup-window'.  A buffer-local or
+file-local value cannot do this: `org-store-log-note' renders the
+stamp while the *Org Note* scratch buffer is current, where the
+history file's local variables are out of scope.")
+
 (defun le::cci-prompt2--unique-heading-id (file-buf)
   "Return a denote-style ID unused by any heading in FILE-BUF.
 Same-second invocations collide on the timestamp; bump one second
@@ -326,9 +343,10 @@ Returns the buffer position of the block body's start."
                       (if subject (concat " re: " subject) "")))
       (save-excursion
         (forward-line -1)
-        (org-todo "EDITING")
-        (when (bound-and-true-p org-log-setup)
-          (org-add-log-note)))
+        (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats))
+          (org-todo "EDITING")
+          (when (bound-and-true-p org-log-setup)
+            (org-add-log-note))))
       (goto-char (point-max))
       (unless (bolp) (insert "\n"))
       (insert "#+begin_src le::cci-prompt2 -i\n")
@@ -379,10 +397,13 @@ global `post-command-hook' via `org-add-log-note' -- which never
 fires inside a command, so flush it by hand or the save would miss
 it.  `org-log-setup' is the pending-note flag; checking
 `post-command-hook' membership instead would be defeated by this
-buffer's buffer-local hook value shadowing the global one."
-  (org-todo state)
-  (when (bound-and-true-p org-log-setup)
-    (org-add-log-note))
+buffer's buffer-local hook value shadowing the global one.
+The let gives the stamp second precision (see
+`le::cci-prompt2--time-stamp-formats')."
+  (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats))
+    (org-todo state)
+    (when (bound-and-true-p org-log-setup)
+      (org-add-log-note)))
   (save-buffer))
 
 (defun le::cci-prompt2--count-editing-siblings (file-buf own-id)
@@ -443,7 +464,7 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
   (root nil :documentation "Expanded project root the prompt targets.")
   (heading-id nil :documentation "Denote-style ID of this prompt's heading.")
   (file-path nil :documentation "Path of the history file the heading lives in.")
-  (hist-entries nil :documentation "History plists (:id :state :text), newest first; nil when not navigating.")
+  (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
   (hist-saved-input nil :documentation "Draft text stashed before history navigation.")
   (saved-winconf nil :documentation "Window configuration saved before the edit buffer opened.")
@@ -466,6 +487,80 @@ meaningful window configuration of its own).")
 SIBLINGS is the number of other EDITING headings at open time."
   (format " Prompt for %s -- %d other EDITING    (C-c ' send, C-c C-k cancel, M-p/M-n history)"
           cci-name siblings))
+
+;;;; Claude CLI history (~/.claude/history.jsonl)
+
+(defvar le::cci-prompt2--claude-history-file "~/.claude/history.jsonl"
+  "Claude Code CLI's own prompt-history file.
+One JSON object per line for every prompt submitted in any project:
+display, pastedContents, timestamp (epoch ms), project (the expanded
+root, no trailing slash).  Merged into M-p/M-n so prompts typed
+straight into the CLI -- or predating the org history file -- are
+still recallable.")
+
+(defconst le::cci-prompt2--dedup-window 5.0
+  "Max |COMMITTED flip - CLI entry timestamp| seconds to call twins.
+A prompt committed from the edit buffer also lands in
+`le::cci-prompt2--claude-history-file' moments later; same text
+inside this window means same send, and the org entry wins.")
+
+(defun le::cci-prompt2--pasted-substitute (display pasted)
+  "Return DISPLAY with \"[Pasted text #N ...]\" placeholders expanded.
+PASTED is the entry's pastedContents value: a hash table keyed by the
+placeholder number as a string.  Placeholders without a text-type
+entry -- and all placeholders when PASTED is empty or not a table --
+stay as-is."
+  (if (not (and (hash-table-p pasted) (> (hash-table-count pasted) 0)))
+      display
+    (replace-regexp-in-string
+     "\\[Pasted text #\\([0-9]+\\)\\(?: \\+[0-9]+ lines\\)?\\]"
+     (lambda (match)
+       (let ((obj (gethash (match-string 1 match) pasted)))
+         (if (and (hash-table-p obj)
+                  (equal (gethash "type" obj) "text")
+                  (stringp (gethash "content" obj)))
+             (gethash "content" obj)
+           match)))
+     display t t)))
+
+(defun le::cci-prompt2--claude-history-entries (root)
+  "Collect project ROOT's prompts from Claude Code's own history.
+Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS), newest
+first, TS in float epoch seconds; nil when
+`le::cci-prompt2--claude-history-file' is unreadable.  The file holds
+every project's prompts, so a raw `search-forward' on the exact
+project field prefilters the few MB before any JSON parsing; the
+parsed object's own project is then compared exactly (the needle can
+also hit prompt text that quotes it, or a longer path sharing the
+prefix)."
+  (let ((file (expand-file-name le::cci-prompt2--claude-history-file))
+        (project (directory-file-name (expand-file-name root)))
+        entries)
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (let ((needle (format "\"project\":\"%s\"" project)))
+          (while (search-forward needle nil t)
+            (let* ((line (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position)))
+                   (obj (ignore-errors (json-parse-string line)))
+                   (ts (and (hash-table-p obj)
+                            (equal (gethash "project" obj) project)
+                            (gethash "timestamp" obj)))
+                   (text (and (numberp ts)
+                              (stringp (gethash "display" obj))
+                              (string-trim
+                               (le::cci-prompt2--pasted-substitute
+                                (gethash "display" obj)
+                                (gethash "pastedContents" obj))))))
+              (when (and text (not (string-empty-p text)))
+                (push (list :id nil :state "CLI" :text text :ts (/ ts 1000.0))
+                      entries)))
+            ;; One entry per line -- don't re-hit the same line when the
+            ;; needle also appears inside its display text.
+            (forward-line 1)))))
+    entries))
 
 ;;;; History navigation
 
@@ -497,12 +592,46 @@ newline."
           (string-trim-right
            (or (org-element-property :value el) "")))))))
 
+(defun le::cci-prompt2--id-time (id)
+  "Return denote-style ID's time as float epoch seconds."
+  (float-time (encode-time (iso8601-parse id))))
+
+(defun le::cci-prompt2--committed-flip-time (beg end)
+  "Return the COMMITTED state-flip time logged between BEG and END,
+as float epoch seconds, or nil when no LOGBOOK line records one.
+Parses the stamp itself: org's own timestamp parser drops the seconds
+this file's flips carry (see `le::cci-prompt2--time-stamp-formats'),
+and those seconds are what keep the flip inside
+`le::cci-prompt2--dedup-window'.  Minute-precision stamps (from
+before seconds shipped) still parse -- they order fine, they just
+cannot dedupe."
+  (save-excursion
+    (goto-char beg)
+    (when (re-search-forward
+           (concat "^[ \t]*- State \"COMMITTED\".*"
+                   "\\[\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)"
+                   " [[:alpha:]]+ \\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)"
+                   "\\(?::\\([0-9]\\{2\\}\\)\\)?\\]")
+           end t)
+      (float-time
+       (encode-time
+        (list (if (match-string 6) (string-to-number (match-string 6)) 0)
+              (string-to-number (match-string 5))
+              (string-to-number (match-string 4))
+              (string-to-number (match-string 3))
+              (string-to-number (match-string 2))
+              (string-to-number (match-string 1))
+              nil -1 nil))))))
+
 (defun le::cci-prompt2--collect-entries ()
   "Collect history entries from this edit buffer's history file.
-Returns plists (:id ID :state STATE :text TEXT), newest first.  The
-current heading is excluded; EDITING headings whose block is open in
-another edit buffer are skipped with a message, since recalling them
-here would fork an in-progress draft."
+Returns plists (:id ID :state STATE :text TEXT :ts TS), newest first.
+TS is the COMMITTED flip time when the heading is COMMITTED and its
+LOGBOOK records one (the dedup key against Claude's own history),
+else the heading ID's time.  The current heading is excluded;
+EDITING headings whose block is open in another edit buffer are
+skipped with a message, since recalling them here would fork an
+in-progress draft."
   (let* ((st le::cci-prompt2--st)
          (own-id (le::cci-prompt2--state-heading-id st))
          (src-buf (marker-buffer org-src--beg-marker)))
@@ -535,19 +664,53 @@ here would fork an in-progress draft."
                  (t
                   (when-let* ((text (le::cci-prompt2--subtree-block-text
                                      heading-beg subtree-end)))
-                    (push (list :id id :state state :text text) entries))))
+                    (push (list :id id :state state :text text
+                                :ts (or (and (equal state "COMMITTED")
+                                             (le::cci-prompt2--committed-flip-time
+                                              heading-beg subtree-end))
+                                        (le::cci-prompt2--id-time id)))
+                          entries))))
                 (goto-char subtree-end))))))
       (when (> skipped 0)
         (message "Skipped %d EDITING heading(s) open in other edit buffers" skipped))
       entries)))
 
-(defun le::cci-prompt2--age-string (id)
-  "Return a relative age like \"2:46 ago\" for denote-style ID.
+(defun le::cci-prompt2--merge-history (org-entries cli-entries)
+  "Merge ORG-ENTRIES and CLI-ENTRIES into one newest-first list.
+A prompt committed from the edit buffer also lands in Claude's own
+history: a CLI entry with `equal' text whose timestamp falls within
+`le::cci-prompt2--dedup-window' of an org entry's COMMITTED flip is
+that same send -- drop it, the org entry wins.  The sort is stable,
+so same-:ts entries keep their source order."
+  (dolist (org-entry org-entries)
+    (when (equal (plist-get org-entry :state) "COMMITTED")
+      (let ((text (string-trim (plist-get org-entry :text)))
+            (ts (plist-get org-entry :ts)))
+        (setq cli-entries
+              (cl-delete-if
+               (lambda (cli-entry)
+                 (and (equal (plist-get cli-entry :text) text)
+                      (<= (abs (- (plist-get cli-entry :ts) ts))
+                          le::cci-prompt2--dedup-window)))
+               cli-entries)))))
+  (sort (append org-entries cli-entries)
+        (lambda (a b) (> (plist-get a :ts) (plist-get b :ts)))))
+
+(defun le::cci-prompt2--collect-history ()
+  "Return the full M-p/M-n history for this edit buffer:
+org-file entries merged with Claude's own history for the project,
+deduped, newest first."
+  (le::cci-prompt2--merge-history
+   (le::cci-prompt2--collect-entries)
+   (le::cci-prompt2--claude-history-entries
+    (le::cci-prompt2--state-root le::cci-prompt2--st))))
+
+(defun le::cci-prompt2--age-string (ts)
+  "Return a relative age like \"2:46 ago\" for TS, float epoch seconds.
 Sub-minute ages read \"less than 1 min ago\"; longer ages go through
 `org-duration-from-minutes' (h:mm by default, days per
 `org-duration-format')."
-  (let* ((time (encode-time (iso8601-parse id)))
-         (mins (floor (/ (float-time (time-since time)) 60))))
+  (let ((mins (floor (/ (- (float-time) ts) 60))))
     (if (< mins 1)
         "less than 1 min ago"
       (format "%s ago" (org-duration-from-minutes mins)))))
@@ -564,10 +727,11 @@ Sub-minute ages read \"less than 1 min ago\"; longer ages go through
           (format " History [%d/%d] %s %s    (M-p older, M-n newer)"
                   (1+ pos) (length entries)
                   (plist-get entry :state)
-                  (le::cci-prompt2--age-string (plist-get entry :id))))))
+                  (le::cci-prompt2--age-string (plist-get entry :ts))))))
 
 (defun le::cci-prompt2-history-previous ()
-  "Show the previous (older) prompt from the history file.
+  "Show the previous (older) prompt from the merged history
+\(history file + Claude's own ~/.claude/history.jsonl).
 The first invocation stashes the in-progress draft;
 \\[le::cci-prompt2-history-next] past the newest entry restores it."
   (interactive)
@@ -576,7 +740,7 @@ The first invocation stashes the in-progress draft;
       (user-error "Not in a CCI prompt edit buffer"))
     (cond
      ((null (le::cci-prompt2--state-hist-position st))
-      (let ((entries (le::cci-prompt2--collect-entries)))
+      (let ((entries (le::cci-prompt2--collect-history)))
         (if (null entries)
             (message "No history")
           (setf (le::cci-prompt2--state-hist-entries st) entries)
