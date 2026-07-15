@@ -42,7 +42,11 @@
 ;; recallable too.  A prompt committed here lands in both stores; the
 ;; merge drops the CLI twin when its timestamp falls within seconds
 ;; of the heading's COMMITTED flip -- which is why the LOGBOOK stamps
-;; carry second precision.
+;; carry second precision.  `yank-media' pastes a clipboard image as
+;; a denote attachment beside the log file (<ts>--screenshot.png):
+;; the prompt text gets a plain "@<path>" mention the CLI resolves at
+;; submit, and the log heading a [[denote:<ts>]] line after its
+;; block.
 ;;
 ;; The CCI-session targeting, region/subject capture, and window-focus
 ;; behavior are copied from v1 rather than shared, so v1 can later be
@@ -516,6 +520,57 @@ end (see `le::cci-prompt2--move-heading-to-final-zone')."
 
 ;;;; Major mode and keymaps
 
+(defun le::cci-prompt2--yank-media-handler (mimetype data)
+  "Save image DATA beside the log file and reference it from both sides.
+Registered for image/.* in `le::cci-prompt2-mode', replacing the
+handler inherited from org, which is doubly wrong here: its
+`org-yank-image-save-method' machinery (yours: attach) needs a
+file-backed heading this edit buffer doesn't have, and it inserts an
+org link the Claude CLI can't read.  The image becomes a denote
+attachment of the prompt log -- saved next to the log file as
+<id>--screenshot.<ext>, MIMETYPE picking the extension, the id minted
+by `denote-get-identifier-function' with silo-wide bump-a-second
+uniqueness.  Two references are minted together: the plain-text
+\"@<root-relative-path>\" inserted at point, which the CLI resolves
+at submit like any other @-mention (`default-directory' here is the
+project root), and a [[denote:<id>]] line appended after the
+heading's #+end_src in the log file -- outside the block, where
+write-back never touches it -- so the log entry stays org-followable.
+The log file is saved; the draft body is not (write-back happens at
+C-x C-s or commit, as always)."
+  (let* ((st (or le::cci-prompt2--st
+                 (user-error "Not in a prompt edit buffer")))
+         (root (le::cci-prompt2--state-root st))
+         (dir (file-name-directory (le::cci-prompt2--state-file-path st)))
+         ;; Denote's used-id scan reads `denote-directory'; scope it to
+         ;; the playground silo (prompt-log/'s parent), as
+         ;; `le::cci-prompt2--create-log-file' does.
+         (denote-directory (file-name-directory (directory-file-name dir)))
+         (id (funcall denote-get-identifier-function nil (current-time)))
+         (subtype (cadr (split-string (symbol-name mimetype) "/")))
+         (ext (concat "." (if (equal subtype "svg+xml") "svg" subtype)))
+         (path (denote-format-file-name dir id nil "screenshot" ext nil))
+         (mk org-src--beg-marker))
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region data nil path nil 'silent))
+    (with-current-buffer (marker-buffer mk)
+      (org-with-wide-buffer
+       (goto-char mk)
+       (org-back-to-heading t)
+       (let ((bound (save-excursion (org-end-of-subtree t t) (point))))
+         (goto-char mk)
+         (unless (re-search-forward "^[ \t]*#\\+end_src" bound t)
+           (user-error "No #+end_src under this draft's heading"))
+         (forward-line 1)
+         (unless (bolp) (insert "\n"))
+         ;; Past earlier pastes' link lines: chronological order.
+         (while (looking-at "\\[\\[denote:") (forward-line 1))
+         (insert (format "[[denote:%s]]\n" id))
+         (save-buffer))))
+    (unless (or (bolp) (memq (char-before) '(?\s ?\t)))
+      (insert " "))
+    (insert "@" (file-relative-name path root) " ")))
+
 (defvar-keymap le::cci-prompt2-mode-map
   :doc "Keymap for `le::cci-prompt2-mode'."
   "M-p" #'le::cci-prompt2-history-previous
@@ -528,7 +583,13 @@ The block language `le::cci-prompt2' resolves here via
 picks this mode with no `org-src-lang-modes' entry.  C-c \\=' commits
 \(sends the prompt), C-c C-k cancels;
 \\[le::cci-prompt2-history-previous]/\\[le::cci-prompt2-history-next] \
-browse earlier prompts (log file merged with CLI history).")
+browse earlier prompts (log file merged with CLI history).
+\\[yank-media] pastes a clipboard image as a denote attachment beside
+the log file and @-mentions it in the prompt."
+  ;; Same TYPES key as org's own registration, so this *replaces* the
+  ;; inherited image handler in these buffers (`yank-media-handler'
+  ;; does setf alist-get on equal keys); org-mode buffers keep theirs.
+  (yank-media-handler "image/.*" #'le::cci-prompt2--yank-media-handler))
 
 (defvar-keymap le::cci-prompt2--edit-map
   :doc "Overrides for `org-src-mode-map' in prompt edit buffers.
