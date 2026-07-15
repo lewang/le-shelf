@@ -20,7 +20,10 @@
 ;; each prompt's fate: EDITING -> COMMITTED (sent) or ABANDONED (kept
 ;; on cancel); a cancelled draft can also be deleted outright.  Each
 ;; headline is titled with the bracketed timestamp of its latest
-;; state flip, mirroring the top LOGBOOK line.
+;; state flip, mirroring the top LOGBOOK line.  Headings sit in two
+;; zones, each ascending by that stamp: terminal ones
+;; (COMMITTED/ABANDONED) first, EDITING drafts at the file's tail --
+;; new drafts append, terminal flips relocate to the zone boundary.
 ;; The log file is a real denote note: `denote' creates it (denote is
 ;; a hard dependency now) inside the playground's denote silo,
 ;; .le-playground/denote/, which /playground-setup bootstraps along
@@ -351,6 +354,9 @@ guaranteed.  The block carries the -i (preserve indentation) switch --
 without it, write-back would indent every line by
 `org-edit-src-content-indentation'.  The save is the crash-recovery
 point: the draft is on disk before the edit buffer even opens.
+Appending at the end of the buffer also keeps the EDITING zone -- the
+file's tail (see `le::cci-prompt2--move-heading-to-final-zone') --
+ascending by stamp.
 Returns (ID . BODY-BEG): the new heading's stamp id and the buffer
 position of the block body's start."
   (with-current-buffer file-buf
@@ -422,9 +428,42 @@ ends up on the heading; point is unchanged otherwise."
 alone."
   (org-edit-headline (if subject (format "%s re: %s" id subject) id)))
 
+(defun le::cci-prompt2--move-heading-to-final-zone ()
+  "Move the terminal heading at point to the end of the final-state zone.
+The log file keeps two zones, each ascending by headline stamp:
+terminal headings (COMMITTED/ABANDONED) first, EDITING drafts at the
+tail.  A terminal flip always mints the file's newest terminal stamp,
+so re-inserting the subtree just before the first EDITING heading --
+or at the end of the buffer when there is none -- keeps both zones
+sorted without ever running a general sort.  Concurrent drafts are
+what make the move real: committing draft B while an older draft A is
+still EDITING lifts B's subtree above A.  Insertion lands at another
+heading's line start, strictly before any live edit-session marker
+\(those point at block bodies), so markers shift instead of
+detaching.  No-op when the subtree is already in place.  Point ends
+on the relocated heading."
+  (org-back-to-heading t)
+  (let* ((beg (point))
+         (end (save-excursion (org-end-of-subtree t t) (point)))
+         (target (save-excursion
+                   (goto-char (point-min))
+                   (if (re-search-forward "^\\* EDITING " nil t)
+                       (line-beginning-position)
+                     (point-max)))))
+    (unless (= target end)
+      (let ((subtree (buffer-substring-no-properties beg end)))
+        (unless (string-suffix-p "\n" subtree)
+          (setq subtree (concat subtree "\n")))
+        (delete-region beg end)
+        (goto-char (if (> target end) (- target (- end beg)) target))
+        (unless (bolp) (insert "\n"))
+        (insert subtree)
+        (goto-char (- (point) (length subtree)))))))
+
 (defun le::cci-prompt2--flip-state-and-save (state)
   "Set the heading at point to STATE, flush its log entry, refresh
-the headline's stamp to the new flip's, and save.
+the headline's stamp to the new flip's, move the subtree into the
+final-state zone, and save.
 With `!' logging, `org-todo' defers the state-change line to the
 global `post-command-hook' via `org-add-log-note' -- which never
 fires inside a command, so flush it by hand or the save would miss
@@ -437,7 +476,9 @@ heading at point even when the buffer has an active region (see
 `le::cci-prompt2--insert-heading').  Afterward the headline's leading
 bracketed stamp is rewritten to the just-logged flip's, preserving
 any \"re: SUBJECT\" tail -- the headline always shows the most recent
-state change, identical to the top LOGBOOK line."
+state change, identical to the top LOGBOOK line.  STATE is always
+terminal here, so the subtree then moves to the final-state zone's
+end (see `le::cci-prompt2--move-heading-to-final-zone')."
   (org-back-to-heading t)
   (let ((heading (point-marker)))
     (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
@@ -456,6 +497,7 @@ state change, identical to the top LOGBOOK line."
                                (substring-no-properties
                                 (org-get-heading t t t t))
                                t t)))
+  (le::cci-prompt2--move-heading-to-final-zone)
   (save-buffer))
 
 (defun le::cci-prompt2--count-editing-siblings (file-buf own-id)
