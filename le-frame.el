@@ -1,5 +1,18 @@
 ;;; le-frame.el --- frame tools  -*- lexical-binding: t -*-
 
+(require 'cl-lib)
+
+(declare-function w-current "w" ())
+(declare-function project-root "project" (project))
+(declare-function ediff-setup-windows-plain "ediff-wind" (buffer-a buffer-b buffer-c control-buffer))
+(declare-function claude-code-ide "claude-code-ide" (&optional force-dir))
+(declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())
+(declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
+(declare-function le::magit-status-noselect "le-magit" (&optional dir))
+(declare-function le::debug-message "le-debug" (format-string &rest args))
+
+(defvar claude-code-ide-window-width)
+(defvar recentf-list)
 
 (defmacro le-frame-with-max (&rest body)
   "provide max-width and height"
