@@ -942,10 +942,11 @@ send flips the state."
 
 (defun le::cci-prompt2-cancel ()
   "Cancel the edit.
-A non-empty draft can be kept in the log file as ABANDONED;
-answering no -- or an empty draft -- deletes its heading outright.
-The question comes before any teardown, so \\[keyboard-quit] aborts
-with the edit buffer untouched."
+A non-empty draft prompts for its fate: `a' abandons it, keeping the
+heading in the log as ABANDONED; `k' kills it, deleting the heading
+outright.  An empty draft is always killed.  The question comes
+before any teardown, so \\[keyboard-quit] aborts with the edit
+buffer untouched."
   (interactive)
   (let* ((ctx (le::cci-prompt2--edit-context))
          (text (plist-get ctx :text))
@@ -953,7 +954,9 @@ with the edit buffer untouched."
          (mk (plist-get ctx :marker))
          (subject (le::cci-prompt2--extract-subject text))
          (keep (and (not (string-empty-p text))
-                    (y-or-n-p "Keep draft in log as ABANDONED? (n deletes it) "))))
+                    (eq ?a (read-char-choice
+                            "Draft: [a]bandon (keep in log) or [k]ill (delete)? "
+                            '(?a ?k))))))
     (if keep
         (progn
           (let ((org-src-window-setup 'current-window))
