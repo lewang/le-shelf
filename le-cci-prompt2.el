@@ -12,7 +12,7 @@
 ;;; Commentary:
 
 ;; v2 of the Claude Code prompt composer (v1: le-cci-edit-prompt.el,
-;; kept in-tree as reference).  Every prompt is a level-1 org heading
+;; removed at 2f0617e).  Every prompt is a level-1 org heading
 ;; in the project's prompt-log file --
 ;; .le-playground/denote/prompt-log/<ts>--claude-code-prompt-log.org --
 ;; written to disk the moment editing starts, so drafts survive
@@ -1214,8 +1214,9 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
 (defun le::cci-prompt2-vterm-send-C-g ()
   "Send a real C-g to the vterm process (e.g. to trigger Claude CLI's
 edit-in-$EDITOR flow).  v2 prompts always open a fresh heading, so
-there is no draft-clobbering hazard to guard against (unlike
-`le::vterm-send-C-g')."
+there is no draft-clobbering hazard to guard against (v1's guarded
+command needed one because it reused a single draft buffer; removed
+at 2f0617e)."
   (interactive)
   (vterm-send-key (kbd "C-g")))
 
