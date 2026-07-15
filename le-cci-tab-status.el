@@ -22,6 +22,11 @@
 
 ;;; Code:
 
+(defgroup le-cci-tab-status nil
+  "Tab-bar status indicators for Claude Code sessions."
+  :group 'tools
+  :prefix "le::cci-tab-")
+
 (declare-function claude-code-ide--session-buffer-p "claude-code-ide" (buffer))
 (declare-function w--find-workspace-for-root "w" (root))
 (declare-function w--find-tab "w" (name))
@@ -157,7 +162,7 @@ Removes itself first so it fires once and never aborts the user's command."
   "Toggle tab bar status indicators for Claude Code sessions.
 When enabled, selecting a tab clears its ⚡/✅ indicator."
   :global t
-  :group 'le-cci
+  :group 'le-cci-tab-status
   (if le::cci-tab-status-mode
       (add-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)
     (remove-hook 'tab-bar-tab-post-select-functions #'le::cci-tab--on-tab-select)))
