@@ -627,15 +627,6 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
 (defvar-local le::cci-prompt2--st nil
   "Prompt edit buffer state, a `le::cci-prompt2--state' struct.")
 
-(defvar-local le::cci-prompt2--return-buffer nil
-  "Buffer to reselect on commit/cancel, in preference to the saved
-window-configuration restore, when that buffer still has a live
-window.  nil for edit buffers opened the normal interactive way.
-Set externally by callers that pop this buffer up over an unrelated
-window layout (e.g. `le::cci-prompt2--claude-prompt-file-setup', which
-resolves this from a `claude-prompt-*.md' temp file with no
-meaningful window configuration of its own).")
-
 (defun le::cci-prompt2--header-line (cci-name siblings)
   "Return the default header line for CCI-NAME's prompt edit buffer.
 SIBLINGS is the number of other EDITING headings at open time."
@@ -927,26 +918,26 @@ Returning to the draft clears the collected entries, so the next
 
 ;;;; Commit / cancel
 
-(defun le::cci-prompt2--restore-window-on-exit (return-buf)
-  "Select RETURN-BUF's window if it still has one.
-Called after a commit or cancel has torn down the edit buffer, so the
-C-M-g temp-file handoff returns focus to the CCI session it came from
-\(RETURN-BUF, set by `le::cci-prompt2--claude-prompt-file-setup').
-Edit buffers opened the normal way carry no RETURN-BUF: their window is
-placed and torn down by `display-buffer'/popper (see the
-`\\`\\*cci-prompt2: ' popper rule and `le::frame-display-left'), so this
-does no window management otherwise -- no saved configuration is
-restored, which is what kept the live CCI window from being scrolled
-back to a stale `window-start' on send."
-  (when-let* ((return-buf)
-              ((buffer-live-p return-buf))
-              (win (get-buffer-window return-buf)))
+(defun le::cci-prompt2--select-cci-window (cci-buf)
+  "Select CCI-BUF's window if it still has one; no-op otherwise.
+Called around a commit or cancel to land focus on the target Claude
+Code session -- the right place for both the normal `C-c '' path and
+the C-M-g temp-file handoff, since CCI-BUF is the prompt's target in
+either case (no separate return-buffer needed).  The edit buffer's own
+window was placed and is torn down by `display-buffer'/popper (see the
+`\\`\\*cci-prompt2: ' popper rule and `le::frame-display-left'); this
+does no other window management -- no saved configuration is restored,
+which is what keeps the live CCI window from being scrolled back to a
+stale `window-start' on send.  When CCI-BUF has no window, focus is
+left where the exit put it rather than forcing the session on screen."
+  (when-let* (((buffer-live-p cci-buf))
+              (win (get-buffer-window cci-buf)))
     (select-window win)))
 
 (defun le::cci-prompt2--edit-context ()
   "Validate the current buffer as a live prompt edit buffer and
 snapshot everything commit/cancel need: a plist of the state fields
-:cci-buf :root :id, plus :return-buf, the trimmed draft
+:cci-buf :root :id, the trimmed draft
 :text, and :marker -- a fresh copy of the block-begin marker, taken
 now because org nils its own markers on exit.  The caller clears the
 copy when done."
@@ -960,7 +951,6 @@ copy when done."
     (list :cci-buf (le::cci-prompt2--state-cci-buffer st)
           :root (le::cci-prompt2--state-root st)
           :id (le::cci-prompt2--state-heading-id st)
-          :return-buf le::cci-prompt2--return-buffer
           :text (string-trim (buffer-string))
           :marker (copy-marker org-src--beg-marker))))
 
@@ -983,11 +973,18 @@ send flips the state."
     (let ((org-src-window-setup 'current-window))
       (org-edit-src-exit))
     ;; Current buffer is now the log file, write-back applied.
-    (let ((found (le::cci-prompt2--goto-own-heading mk id)))
+    (let* ((log-buf (current-buffer))
+           (found (le::cci-prompt2--goto-own-heading mk id)))
       (if found
           (le::cci-prompt2--set-heading-subject id subject)
         (message "Heading %s not found in log file; state not updated" id))
       (save-buffer)
+      ;; Focus the session window *before* the send.  `send-prompt' does a
+      ;; `sit-for' that forces a redisplay mid-command; selecting first
+      ;; means that redisplay already shows the session window instead of
+      ;; flashing through the log-file window this exit left selected.  The
+      ;; session buffer is the target for both the normal and C-M-g paths.
+      (le::cci-prompt2--select-cci-window cci-buf)
       (condition-case err
           (progn
             (if (buffer-live-p cci-buf)
@@ -995,15 +992,15 @@ send flips the state."
                   (claude-code-ide-send-prompt text))
               (let ((default-directory root))
                 (claude-code-ide-send-prompt text)))
-            (when (and found (le::cci-prompt2--goto-own-heading mk id))
-              (le::cci-prompt2--flip-state-and-save "COMMITTED"))
+            (with-current-buffer log-buf
+              (when (and found (le::cci-prompt2--goto-own-heading mk id))
+                (le::cci-prompt2--flip-state-and-save "COMMITTED")))
             (message "Prompt sent to %s"
                      (if (buffer-live-p cci-buf) (buffer-name cci-buf) root)))
         (error
          (message "Send failed (%s); draft kept as EDITING -- M-p recalls it"
                   (error-message-string err)))))
-    (set-marker mk nil)
-    (le::cci-prompt2--restore-window-on-exit (plist-get ctx :return-buf))))
+    (set-marker mk nil)))
 
 (defun le::cci-prompt2-cancel ()
   "Cancel the edit.
@@ -1042,7 +1039,7 @@ buffer untouched."
               (save-buffer))
           (message "Heading %s not found in log file; nothing deleted" id))))
     (set-marker mk nil)
-    (le::cci-prompt2--restore-window-on-exit (plist-get ctx :return-buf))))
+    (le::cci-prompt2--select-cci-window (plist-get ctx :cci-buf))))
 
 ;;;; Main entry point
 
@@ -1192,17 +1189,17 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
                              (file-name-nondirectory (buffer-file-name))))
     (let* ((prompt-buf (current-buffer))
            (cci-buf (le::cci-prompt2--session-buffer-for-client))
-           (text (buffer-string))
-           (editor-buf (if cci-buf
-                           (with-current-buffer cci-buf
-                             (le::cci-prompt2-edit nil text))
-                         (le::cci-prompt2-edit nil text))))
+           (text (buffer-string)))
+      ;; Open the edit buffer before blanking the temp file (see below).
+      ;; Its return value isn't needed: the edit buffer captures its own
+      ;; target session into state, so focus-on-exit resolves there.
+      (if cci-buf
+          (with-current-buffer cci-buf
+            (le::cci-prompt2-edit nil text))
+        (le::cci-prompt2-edit nil text))
       (with-current-buffer prompt-buf
         (erase-buffer)
         (save-buffer))
-      (when (and cci-buf (buffer-live-p editor-buf))
-        (with-current-buffer editor-buf
-          (setq-local le::cci-prompt2--return-buffer cci-buf)))
       (when (buffer-live-p prompt-buf)
         (with-current-buffer prompt-buf
           (le::cci-prompt2--server-edit-with-message
