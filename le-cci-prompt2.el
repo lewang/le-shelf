@@ -622,7 +622,6 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
   (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
   (hist-saved-input nil :documentation "Draft text stashed before history navigation.")
-  (saved-winconf nil :documentation "Window configuration saved before the edit buffer opened.")
   (header-line-default nil :documentation "Default header line, restored after history navigation."))
 
 (defvar-local le::cci-prompt2--st nil
@@ -928,19 +927,26 @@ Returning to the draft clears the collected entries, so the next
 
 ;;;; Commit / cancel
 
-(defun le::cci-prompt2--restore-window-on-exit (return-buf winconf)
-  "Select RETURN-BUF's window if it still has one, else restore WINCONF.
-Called after a commit or cancel has torn down the edit buffer."
-  (if-let* ((return-buf)
-            ((buffer-live-p return-buf))
-            (win (get-buffer-window return-buf)))
-      (select-window win)
-    (when winconf (set-window-configuration winconf))))
+(defun le::cci-prompt2--restore-window-on-exit (return-buf)
+  "Select RETURN-BUF's window if it still has one.
+Called after a commit or cancel has torn down the edit buffer, so the
+C-M-g temp-file handoff returns focus to the CCI session it came from
+\(RETURN-BUF, set by `le::cci-prompt2--claude-prompt-file-setup').
+Edit buffers opened the normal way carry no RETURN-BUF: their window is
+placed and torn down by `display-buffer'/popper (see the
+`\\`\\*cci-prompt2: ' popper rule and `le::frame-display-left'), so this
+does no window management otherwise -- no saved configuration is
+restored, which is what kept the live CCI window from being scrolled
+back to a stale `window-start' on send."
+  (when-let* ((return-buf)
+              ((buffer-live-p return-buf))
+              (win (get-buffer-window return-buf)))
+    (select-window win)))
 
 (defun le::cci-prompt2--edit-context ()
   "Validate the current buffer as a live prompt edit buffer and
 snapshot everything commit/cancel need: a plist of the state fields
-:cci-buf :root :id :winconf, plus :return-buf, the trimmed draft
+:cci-buf :root :id, plus :return-buf, the trimmed draft
 :text, and :marker -- a fresh copy of the block-begin marker, taken
 now because org nils its own markers on exit.  The caller clears the
 copy when done."
@@ -954,7 +960,6 @@ copy when done."
     (list :cci-buf (le::cci-prompt2--state-cci-buffer st)
           :root (le::cci-prompt2--state-root st)
           :id (le::cci-prompt2--state-heading-id st)
-          :winconf (le::cci-prompt2--state-saved-winconf st)
           :return-buf le::cci-prompt2--return-buffer
           :text (string-trim (buffer-string))
           :marker (copy-marker org-src--beg-marker))))
@@ -998,8 +1003,7 @@ send flips the state."
          (message "Send failed (%s); draft kept as EDITING -- M-p recalls it"
                   (error-message-string err)))))
     (set-marker mk nil)
-    (le::cci-prompt2--restore-window-on-exit
-     (plist-get ctx :return-buf) (plist-get ctx :winconf))))
+    (le::cci-prompt2--restore-window-on-exit (plist-get ctx :return-buf))))
 
 (defun le::cci-prompt2-cancel ()
   "Cancel the edit.
@@ -1038,8 +1042,7 @@ buffer untouched."
               (save-buffer))
           (message "Heading %s not found in log file; nothing deleted" id))))
     (set-marker mk nil)
-    (le::cci-prompt2--restore-window-on-exit
-     (plist-get ctx :return-buf) (plist-get ctx :winconf))))
+    (le::cci-prompt2--restore-window-on-exit (plist-get ctx :return-buf))))
 
 ;;;; Main entry point
 
@@ -1059,7 +1062,6 @@ the choice as a buffer-local override.  INITIAL-TEXT, if non-nil,
 seeds the draft.  Returns the edit buffer."
   (interactive "P")
   (let* ((src-buf (current-buffer))
-         (winconf (current-window-configuration))
          (region-ref (or (le::cci-prompt2--capture-region-ref)
                          (le::cci-prompt2--capture-point-subject)))
          (target (le::cci-prompt2--resolve-cci-target force-choose))
@@ -1119,7 +1121,6 @@ seeds the draft.  Returns the edit buffer."
                  :root root
                  :heading-id id
                  :file-path path
-                 :saved-winconf winconf
                  :header-line-default hdr))
           (setq header-line-format hdr))
         (goto-char (min (cdr content) (point-max))))
