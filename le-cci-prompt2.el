@@ -331,6 +331,66 @@ construction, with no same-second formatting race."
     (when (looking-at "[ \t]*- State \"[A-Z]+\".*\\(\\[[^]\n]+\\]\\)")
       (match-string-no-properties 1))))
 
+(defmacro le::cci-prompt2--save-buffer-order (&rest body)
+  "Run BODY, then restore the buffer ordering it perturbed.
+Exists for `org-add-log-note', which opens with the window dance only
+an interactive `@' note needs -- `pop-to-buffer' the log buffer
+full-frame, then an *Org Note* buffer -- before noticing that a
+`!'-style flip stores immediately (org 9.8.7, org.el:11064).
+Selecting a window records its buffer, and the window configuration
+org restores afterwards (org.el:11182) covers none of what recording
+touched, so a flip in this never-displayed log buffer left it at the
+front of the frame's `buffer-list' parameter, the global buffer
+list, and the selected window's `prev-buffers' -- the `C-x b'
+default and the `switch-to-prev-buffer' cycle both started offering
+the prompt log.  Snapshot all three around BODY and put them back.
+The global list has no order-writing setter -- `bury-buffer-internal'
+is its only mutator -- so it is rebuilt by burying every pre-existing
+live buffer in its old order (a cheap C call each, though it fires
+`buffer-list-update-hook' once per buffer).  Burying also edits the
+frame parameters, so those are restored after it.  Buffers BODY
+killed drop out via the liveness filters (the dance's *Org Note*
+scratch buffer); a buffer BODY created and kept would be left at the
+global front, unrestored -- none in our use."
+  (declare (indent 0) (debug t))
+  (cl-with-gensyms (buffers frame-bufs frame-buried win win-prevs buf entry)
+    `(let* ((,buffers (buffer-list))
+            (,frame-bufs (frame-parameter nil 'buffer-list))
+            (,frame-buried (frame-parameter nil 'buried-buffer-list))
+            (,win (selected-window))
+            (,win-prevs (window-prev-buffers ,win)))
+       (unwind-protect
+           (progn ,@body)
+         (dolist (,buf ,buffers)
+           (when (buffer-live-p ,buf) (bury-buffer-internal ,buf)))
+         (modify-frame-parameters
+          nil (list (cons 'buffer-list
+                          (seq-filter #'buffer-live-p ,frame-bufs))
+                    (cons 'buried-buffer-list
+                          (seq-filter #'buffer-live-p ,frame-buried))))
+         (when (window-live-p ,win)
+           (set-window-prev-buffers
+            ,win (seq-filter (lambda (,entry)
+                               (buffer-live-p (car ,entry)))
+                             ,win-prevs)))))))
+
+(defun le::cci-prompt2--flush-pending-log-note ()
+  "Flush the LOGBOOK line of the state flip `org-todo' just deferred.
+With `!' logging, `org-todo' does not insert the \"- State\" line
+itself: it queues `org-add-log-note' on the global
+`post-command-hook', which never fires inside a command, so callers
+flush by hand right after the flip -- their save would miss the line
+otherwise.  `org-log-setup' is the pending-note flag; checking
+`post-command-hook' membership instead would be defeated by this
+buffer's buffer-local hook value shadowing the global one.
+The flush runs inside `le::cci-prompt2--save-buffer-order' because
+`org-add-log-note' briefly displays and selects the log buffer,
+which would otherwise promote it in the buffer lists (see the
+macro)."
+  (when (bound-and-true-p org-log-setup)
+    (le::cci-prompt2--save-buffer-order
+      (org-add-log-note))))
+
 (defun le::cci-prompt2--extract-subject (text)
   "Return the subject from TEXT's leading \"re: SUBJECT\" line, or nil."
   (when (string-match "\\`re: \\(.+\\)$" text)
@@ -373,8 +433,7 @@ position of the block body's start."
       (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
             (org-loop-over-headlines-in-active-region nil))
         (org-todo "EDITING")
-        (when (bound-and-true-p org-log-setup)
-          (org-add-log-note)))
+        (le::cci-prompt2--flush-pending-log-note))
       ;; The log-note flush may move point; the new heading is the
       ;; buffer's last.
       (goto-char (point-max))
@@ -468,12 +527,9 @@ on the relocated heading."
   "Set the heading at point to STATE, flush its log entry, refresh
 the headline's stamp to the new flip's, move the subtree into the
 final-state zone, and save.
-With `!' logging, `org-todo' defers the state-change line to the
-global `post-command-hook' via `org-add-log-note' -- which never
-fires inside a command, so flush it by hand or the save would miss
-it.  `org-log-setup' is the pending-note flag; checking
-`post-command-hook' membership instead would be defeated by this
-buffer's buffer-local hook value shadowing the global one.
+`le::cci-prompt2--flush-pending-log-note' flushes the state-change
+line `org-todo' deferred, keeping the log buffer's spot in the
+buffer lists (see it and `le::cci-prompt2--save-buffer-order').
 The lets give the stamp second precision (see
 `le::cci-prompt2--time-stamp-formats') and pin `org-todo' to the
 heading at point even when the buffer has an active region (see
@@ -488,8 +544,7 @@ end (see `le::cci-prompt2--move-heading-to-final-zone')."
     (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
           (org-loop-over-headlines-in-active-region nil))
       (org-todo state)
-      (when (bound-and-true-p org-log-setup)
-        (org-add-log-note)))
+      (le::cci-prompt2--flush-pending-log-note))
     ;; The log-note flush may move point; the marker survives the
     ;; drawer insertion below the headline.
     (goto-char heading)
@@ -974,7 +1029,14 @@ send flips the state."
     (when (string-empty-p text)
       (set-marker mk nil)
       (user-error "Empty prompt -- C-c C-k to discard"))
-    (let ((org-src-window-setup 'current-window))
+    ;; `switch-invisibly' exits without displaying the source buffer.  The
+    ;; source here is the throwaway prompt-log, not something to pop back to
+    ;; (`org-edit-src-exit's default is "return to source buffer"); this makes
+    ;; the log buffer current for write-back but shows it in no window, and
+    ;; killing the edit buffer reverts its own window.  Never
+    ;; `set-window-configuration' -- it would re-scroll the live CCI window
+    ;; (see [le-cci-prompt2:7]).
+    (let ((org-src-window-setup 'switch-invisibly))
       (org-edit-src-exit))
     ;; Current buffer is now the log file, write-back applied.
     (let* ((log-buf (current-buffer))
@@ -1024,7 +1086,9 @@ buffer untouched."
                             '(?a ?k))))))
     (if keep
         (progn
-          (let ((org-src-window-setup 'current-window))
+          ;; `switch-invisibly': exit without displaying the log buffer
+          ;; (see `le::cci-prompt2-commit').
+          (let ((org-src-window-setup 'switch-invisibly))
             (org-edit-src-exit))
           (if (le::cci-prompt2--goto-own-heading mk id)
               (progn
@@ -1032,7 +1096,9 @@ buffer untouched."
                 (le::cci-prompt2--flip-state-and-save "ABANDONED"))
             (message "Heading %s not found in log file; state not updated" id)
             (save-buffer)))
-      (let ((org-src-window-setup 'current-window))
+      ;; `switch-invisibly': abort without displaying the log buffer
+      ;; (see `le::cci-prompt2-commit').
+      (let ((org-src-window-setup 'switch-invisibly))
         (org-edit-src-abort))
       (with-current-buffer (marker-buffer mk)
         (if (le::cci-prompt2--goto-own-heading mk id)
