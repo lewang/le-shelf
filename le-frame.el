@@ -302,6 +302,74 @@ Two layout strategies:
       (le::debug-message "ide-reset: done"))))
 
 ;;;; ---------------------------------------------------------------
+;;;; Role-aware prev-buffer skip
+;;;; ---------------------------------------------------------------
+
+;; When a buffer shown in an IDE pane is killed/buried, keep the window on its
+;; ROLE instead of whatever `switch-to-prev-buffer' pulls from history: the
+;; top-left pane stays on project buffers, the bottom-left pane prefers the
+;; workspace's magit-status (then project buffers).  Installed as
+;; `switch-to-prev-buffer-skip' (a filter: non-nil skips a candidate).
+
+(defun le::frame--skip-unless (window keeper-p buffer)
+  "Return non-nil to SKIP BUFFER for WINDOW unless it is a role keeper.
+KEEPER-P is a predicate on a buffer.  Skip BUFFER only when it fails KEEPER-P
+AND some live buffer on WINDOW's frame -- other than BUFFER and other than the
+buffer WINDOW is being moved off of (`window-buffer', the one killed/buried) --
+passes KEEPER-P, i.e. a reachable keeper is available to fall back on.  If
+BUFFER is itself a keeper, or no other reachable keeper exists, return nil (do
+not skip), so the window is never stranded (on the kill path an all-skipped
+result would delete it)."
+  (and (not (funcall keeper-p buffer))
+       (let ((old (window-buffer window)))
+         (seq-find (lambda (b)
+                     (and (not (eq b buffer))
+                          (not (eq b old))
+                          (buffer-live-p b)
+                          (funcall keeper-p b)))
+                   (buffer-list (window-frame window))))
+       t))
+
+(defun le::frame--workspace-magit-status (&optional exclude)
+  "Return the current workspace's live magit-status buffer, or nil.
+EXCLUDE, when non-nil, is not considered (e.g. the buffer being killed).
+Relies on the caller having selected the relevant window/frame so that
+`le::frame--magit-status-p' resolves the intended workspace."
+  (seq-find (lambda (b)
+              (and (buffer-live-p b)
+                   (not (eq b exclude))
+                   (le::frame--magit-status-p b nil)))
+            (buffer-list)))
+
+;;;###autoload
+(defun le::frame-prev-buffer-skip (window buffer _bury-or-kill)
+  "`switch-to-prev-buffer-skip' predicate that keeps each IDE pane on its role.
+Only acts inside the recognized 3-pane layout for WINDOW's own frame
+\(`le::ide--compatible-layout'); elsewhere returns nil so Emacs behaves
+normally.  In that layout:
+- top-left (project): skip BUFFER unless it is a workspace project buffer
+  (per `le::ide--file-in-project-p', which counts `.le-playground' scratchpad
+  buffers as part of the parent project);
+- bottom-left (magit): prefer the workspace's live magit-status; if none,
+  fall back to workspace project buffers;
+- right (cci) / anything else: leave alone.
+Never skips so as to strand the window (see `le::frame--skip-unless')."
+  (with-selected-window window
+    (when-let* ((layout (le::ide--compatible-layout))
+                (ws-root (plist-get (w-current) :project-root)))
+      (cl-flet ((keeper-project-p (b)
+                  (when-let* ((f (buffer-file-name b)))
+                    (le::ide--file-in-project-p f ws-root))))
+        (cond
+         ((eq window (plist-get layout :top-left))
+          (le::frame--skip-unless window #'keeper-project-p buffer))
+         ((eq window (plist-get layout :bottom-left))
+          (if-let* ((ms (le::frame--workspace-magit-status (window-buffer window))))
+              (le::frame--skip-unless window (lambda (b) (eq b ms)) buffer)
+            (le::frame--skip-unless window #'keeper-project-p buffer)))
+         (t nil))))))
+
+;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
 ;;;; ---------------------------------------------------------------
 
