@@ -9,7 +9,7 @@
 ;; unions a repo and its playground for file-finding ONLY: `project-current'
 ;; stays native, so grep/compile/vc-dir keep each repo's own identity.
 ;;
-;; `le::project-find-file-both' builds the merged project on demand, so only
+;; `le::project-find-file' builds the merged project on demand, so only
 ;; that command sees the union.  Wire it up with a `[remap project-find-file]'
 ;; binding (see post-init.el).
 
@@ -55,7 +55,7 @@ Return a `le-playground' project unioning both, or nil elsewhere (defer to
     (list 'le-playground parent-proj play-proj)))
 
 ;;;###autoload
-(defun le::project-find-file-both (&optional include-all)
+(defun le::project-find-file (&optional include-all)
   "`project-find-file' across a repo and its `.le-playground' worktree.
 Builds the merged project on demand, so only this command sees the union.
 With INCLUDE-ALL (a prefix argument) this degrades to the parent root only,

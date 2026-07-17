@@ -20,8 +20,8 @@ choices). Keep that separation:
 6. **Init stays thin.** `post-init.el` is only keybinding choices, behavior tweaks, and variable settings — never
    feature implementation. If it's more than a binding or a `setq`, it belongs in a file here.
 
-Example: `le-project.el` defines `le::project-find-file-both` with a `;;;###autoload` cookie; `post-init.el` wires it
-with `([remap project-find-file] . le::project-find-file-both)` in the le-shelf `use-package :bind`. No `require`.
+Example: `le-project.el` defines `le::project-find-file` with a `;;;###autoload` cookie; `post-init.el` wires it
+with `([remap project-find-file] . le::project-find-file)` in the le-shelf `use-package :bind`. No `require`.
 
 ## Elisp conventions
 
