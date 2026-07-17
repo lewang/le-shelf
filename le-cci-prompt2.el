@@ -304,23 +304,24 @@ filename -- denote-style timestamp prefixes sort chronologically."
 
 ;;;; Heading bookkeeping (all run in the log file buffer)
 
-(defconst le::cci-prompt2--state-stamp-format "[%Y-%m-%d %a %H:%M:%S]"
-  "`format-time-string' format for LOGBOOK \"- State\" line stamps.
-Carries seconds -- the COMMITTED flip time is deduped against
+(defconst le::cci-prompt2--time-stamp-formats
+  '("%Y-%m-%d %a" . "%Y-%m-%d %a %H:%M:%S")
+  "`org-time-stamp-formats' with seconds on the date-time format.
+Let-bound around each state flip so the LOGBOOK \"- State\" stamps
+carry seconds -- the COMMITTED flip time is deduped against
 ~/.claude/history.jsonl entry timestamps, and minute precision would
-eat most of `le::cci-prompt2--dedup-window'.  Rendered directly by
-`le::cci-prompt2--insert-state-line'; under org's own logging this
-precision needed a global let of `org-time-stamp-formats', because
-`org-store-log-note' renders stamps in the *Org Note* scratch buffer
-where the log file's buffer-local variables are out of scope.")
+eat most of `le::cci-prompt2--dedup-window'.  A buffer-local or
+file-local value cannot do this: `org-store-log-note' renders the
+stamp while the *Org Note* scratch buffer is current, where the
+log file's local variables are out of scope.")
 
 (defun le::cci-prompt2--heading-flip-stamp ()
   "Return the bracketed timestamp of the most recent state flip
 recorded in the LOGBOOK of the heading at point, brackets included --
 e.g. \"[2026-07-14 Tue 17:47:45]\" -- or nil when the drawer's top
 line is not a \"- State\" entry.  Only the top line is examined:
-state lines are prepended (`le::cci-prompt2--insert-state-line'), so
-right after a flip the line at `org-log-beginning' is that flip's.  This is what the
+org prepends the newest note, so right after a flip's log flush the
+line at `org-log-beginning' is that flip's.  This is what the
 headline mirrors -- after every flip the headline's stamp is
 rewritten to this value, so headline time == latest state change by
 construction, with no same-second formatting race."
@@ -329,62 +330,6 @@ construction, with no same-second formatting race."
     (goto-char (org-log-beginning))
     (when (looking-at "[ \t]*- State \"[A-Z]+\".*\\(\\[[^]\n]+\\]\\)")
       (match-string-no-properties 1))))
-
-(defun le::cci-prompt2--insert-state-line (state prev-state)
-  "Prepend the LOGBOOK \"- State\" line for a flip to STATE of the
-heading at point.  PREV-STATE is the keyword the heading left, nil
-when it had none.  The line is rendered from `org-log-note-headings''
-`state' template and inserted at `org-log-beginning' -- the same
-template and insertion point `org-store-log-note' uses -- so it is
-what org itself would have logged, except the stamp carries seconds
-\(see `le::cci-prompt2--state-stamp-format').  Point is preserved.
-
-Callers bind `org-inhibit-logging' around `org-todo' and call this
-instead, because org's own logging cannot run cleanly in a background
-buffer.  `org-todo' defers the line to `org-add-log-note', which
-opens with the window dance only an interactive `@' note needs --
-`pop-to-buffer' the log buffer full-frame, then an *Org Note* buffer
--- before noticing that a `!'-style flip stores immediately (org
-9.8.7, org.el:11064).  Selecting a window records its buffer, and the
-window configuration org restores afterwards (org.el:11182) covers
-neither the frame's `buffer-list' parameter, nor the global buffer
-list, nor the selected window's `prev-buffers' -- so every flip of
-this never-displayed file promoted it to the front of all three,
-making the prompt log the `C-x b' default and polluting
-`switch-to-prev-buffer' history.  Writing the line directly sidesteps
-that machinery entirely; it also renders the stamp in this buffer,
-ending the global `org-time-stamp-formats' let that seconds precision
-used to require."
-  (org-fold-core-ignore-modifications
-    (org-with-wide-buffer
-     (let ((line (org-replace-escapes
-                  (cdr (assq 'state org-log-note-headings))
-                  (list (cons "%t" (format-time-string
-                                    le::cci-prompt2--state-stamp-format))
-                        (cons "%T" (format-time-string
-                                    "<%Y-%m-%d %a %H:%M:%S>"))
-                        (cons "%d" (format-time-string "[%Y-%m-%d %a]"))
-                        (cons "%D" (format-time-string "<%Y-%m-%d %a>"))
-                        (cons "%s" (if state (format "\"%s\"" state) ""))
-                        (cons "%S" (if prev-state
-                                       (format "\"%s\"" prev-state)
-                                     ""))
-                        (cons "%u" (user-login-name))
-                        (cons "%U" user-full-name)))))
-       (goto-char (org-log-beginning t))
-       ;; `org-store-log-note's own fixups: the line gets a row of its
-       ;; own, list-indented like the sibling notes.
-       (cond ((not (bolp)) (insert-and-inherit "\n"))
-             ((looking-at "[ \t]*\\S-")
-              (save-excursion (insert-and-inherit "\n"))))
-       (let ((itemp (org-in-item-p)))
-         (if itemp
-             (indent-line-to
-              (let ((struct (save-excursion
-                              (goto-char itemp) (org-list-struct))))
-                (org-list-get-ind (org-list-get-top-point struct) struct)))
-           (org-indent-line)))
-       (insert-and-inherit (org-list-bullet-string "-") line)))))
 
 (defun le::cci-prompt2--extract-subject (text)
   "Return the subject from TEXT's leading \"re: SUBJECT\" line, or nil."
@@ -400,10 +345,9 @@ are identical by construction.  That stamp is also the heading's id
 for the rest of the edit session.  SUBJECT, when non-nil, follows it
 as \"re: SUBJECT\".
 The heading is inserted without a keyword and put into EDITING via
-`org-todo' with logging inhibited; the LOGBOOK line is written by
-`le::cci-prompt2--insert-state-line' (see it for why org's own note
-machinery is unusable in this never-displayed buffer).
-`org-loop-over-headlines-in-active-region' is
+`org-todo', so org's state-change machinery records the initial state
+in the LOGBOOK per the file's `(e!)' spec; literal keyword text would
+bypass the logging.  `org-loop-over-headlines-in-active-region' is
 disabled around the flip: invoked from the log file's own buffer with
 an active region, `org-todo' would otherwise loop over the region's
 headings instead of flipping the one at point -- leaving this heading
@@ -426,19 +370,21 @@ position of the block body's start."
       (unless (bolp) (insert "\n"))
       (insert "* \n")
       (forward-line -1)
-      (let ((org-inhibit-logging t)  ; line written below, not by org
+      (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
             (org-loop-over-headlines-in-active-region nil))
-        (org-todo "EDITING"))
-      (le::cci-prompt2--insert-state-line "EDITING" nil)
-      ;; Belt: `org-todo' can move point; the new heading is the
+        (org-todo "EDITING")
+        (when (bound-and-true-p org-log-setup)
+          (org-add-log-note)))
+      ;; The log-note flush may move point; the new heading is the
       ;; buffer's last.
       (goto-char (point-max))
       (org-back-to-heading t)
       (let ((id (or (le::cci-prompt2--heading-flip-stamp)
-                    ;; Reading back the just-written line can only fail
-                    ;; if it is malformed; stamp "now" as a safety net.
+                    ;; No log line only when the flip went unlogged
+                    ;; (logging misconfigured); stamp "now" instead.
                     (format-time-string
-                     le::cci-prompt2--state-stamp-format))))
+                     (format "[%s]"
+                             (cdr le::cci-prompt2--time-stamp-formats))))))
         (org-edit-headline (if subject (format "%s re: %s" id subject) id))
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
@@ -519,28 +465,35 @@ on the relocated heading."
         (goto-char (- (point) (length subtree)))))))
 
 (defun le::cci-prompt2--flip-state-and-save (state)
-  "Set the heading at point to STATE, write its LOGBOOK line, refresh
+  "Set the heading at point to STATE, flush its log entry, refresh
 the headline's stamp to the new flip's, move the subtree into the
 final-state zone, and save.
-`org-todo' flips the keyword with logging inhibited; the state-change
-line is written by `le::cci-prompt2--insert-state-line' (see it for
-why org's own note machinery is unusable in this never-displayed
-buffer).  `org-loop-over-headlines-in-active-region' pins `org-todo'
-to the heading at point even when the buffer has an active region
-\(see `le::cci-prompt2--insert-heading').  Afterward the headline's
-leading bracketed stamp is rewritten to the just-written flip's,
-preserving any \"re: SUBJECT\" tail -- the headline always shows the
-most recent state change, identical to the top LOGBOOK line.  STATE
-is always terminal here, so the subtree then moves to the final-state
-zone's end (see `le::cci-prompt2--move-heading-to-final-zone')."
+With `!' logging, `org-todo' defers the state-change line to the
+global `post-command-hook' via `org-add-log-note' -- which never
+fires inside a command, so flush it by hand or the save would miss
+it.  `org-log-setup' is the pending-note flag; checking
+`post-command-hook' membership instead would be defeated by this
+buffer's buffer-local hook value shadowing the global one.
+The lets give the stamp second precision (see
+`le::cci-prompt2--time-stamp-formats') and pin `org-todo' to the
+heading at point even when the buffer has an active region (see
+`le::cci-prompt2--insert-heading').  Afterward the headline's leading
+bracketed stamp is rewritten to the just-logged flip's, preserving
+any \"re: SUBJECT\" tail -- the headline always shows the most recent
+state change, identical to the top LOGBOOK line.  STATE is always
+terminal here, so the subtree then moves to the final-state zone's
+end (see `le::cci-prompt2--move-heading-to-final-zone')."
   (org-back-to-heading t)
-  (let ((prev (substring-no-properties (or (org-get-todo-state) ""))))
-    (let ((org-inhibit-logging t)  ; line written below, not by org
+  (let ((heading (point-marker)))
+    (let ((org-time-stamp-formats le::cci-prompt2--time-stamp-formats)
           (org-loop-over-headlines-in-active-region nil))
-      (org-todo state))
-    (org-back-to-heading t)
-    (le::cci-prompt2--insert-state-line
-     state (and (not (string-empty-p prev)) prev)))
+      (org-todo state)
+      (when (bound-and-true-p org-log-setup)
+        (org-add-log-note)))
+    ;; The log-note flush may move point; the marker survives the
+    ;; drawer insertion below the headline.
+    (goto-char heading)
+    (set-marker heading nil))
   (when-let* ((stamp (le::cci-prompt2--heading-flip-stamp)))
     (org-edit-headline
      (replace-regexp-in-string "\\`\\[[^]\n]+\\]"
@@ -790,7 +743,7 @@ newline."
 STAMP looks like \"[2026-07-14 Tue 17:47:45]\"; the seconds field is
 optional.  Parsed by hand: org's own timestamp parser drops the
 seconds these stamps carry (see
-`le::cci-prompt2--state-stamp-format'), and for a COMMITTED heading
+`le::cci-prompt2--time-stamp-formats'), and for a COMMITTED heading
 those seconds are what keep its flip time inside
 `le::cci-prompt2--dedup-window'.  Minute-precision stamps (from
 before seconds shipped) still parse -- they order fine, they just
@@ -1021,14 +974,7 @@ send flips the state."
     (when (string-empty-p text)
       (set-marker mk nil)
       (user-error "Empty prompt -- C-c C-k to discard"))
-    ;; `switch-invisibly' exits without displaying the source buffer.  The
-    ;; source here is the throwaway prompt-log, not something to pop back to
-    ;; (`org-edit-src-exit's default is "return to source buffer"); this makes
-    ;; the log buffer current for write-back but shows it in no window, and
-    ;; killing the edit buffer reverts its own window.  Never
-    ;; `set-window-configuration' -- it would re-scroll the live CCI window
-    ;; (see [le-cci-prompt2:7]).
-    (let ((org-src-window-setup 'switch-invisibly))
+    (let ((org-src-window-setup 'current-window))
       (org-edit-src-exit))
     ;; Current buffer is now the log file, write-back applied.
     (let* ((log-buf (current-buffer))
@@ -1078,9 +1024,7 @@ buffer untouched."
                             '(?a ?k))))))
     (if keep
         (progn
-          ;; `switch-invisibly': exit without displaying the log buffer
-          ;; (see `le::cci-prompt2-commit').
-          (let ((org-src-window-setup 'switch-invisibly))
+          (let ((org-src-window-setup 'current-window))
             (org-edit-src-exit))
           (if (le::cci-prompt2--goto-own-heading mk id)
               (progn
@@ -1088,9 +1032,7 @@ buffer untouched."
                 (le::cci-prompt2--flip-state-and-save "ABANDONED"))
             (message "Heading %s not found in log file; state not updated" id)
             (save-buffer)))
-      ;; `switch-invisibly': abort without displaying the log buffer
-      ;; (see `le::cci-prompt2-commit').
-      (let ((org-src-window-setup 'switch-invisibly))
+      (let ((org-src-window-setup 'current-window))
         (org-edit-src-abort))
       (with-current-buffer (marker-buffer mk)
         (if (le::cci-prompt2--goto-own-heading mk id)
