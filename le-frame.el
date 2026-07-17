@@ -350,8 +350,11 @@ normally.  In that layout:
 - top-left (project): skip BUFFER unless it is a workspace project buffer
   (per `le::ide--file-in-project-p', which counts `.le-playground' scratchpad
   buffers as part of the parent project);
-- bottom-left (magit): prefer the workspace's live magit-status; if none,
-  fall back to workspace project buffers;
+- bottom-left (magit): when REFILLING (kill/bury) prefer the workspace's live
+  magit-status, else its project buffers; during interactive buffer navigation
+  (`previous-buffer'/`next-buffer') treat magit-status as just one more
+  workspace keeper so the pane cycles naturally instead of snapping back to
+  magit-status every other press;
 - right (cci) / anything else: leave alone.
 Never skips so as to strand the window (see `le::frame--skip-unless')."
   (with-selected-window window
@@ -364,9 +367,18 @@ Never skips so as to strand the window (see `le::frame--skip-unless')."
          ((eq window (plist-get layout :top-left))
           (le::frame--skip-unless window #'keeper-project-p buffer))
          ((eq window (plist-get layout :bottom-left))
-          (if-let* ((ms (le::frame--workspace-magit-status (window-buffer window))))
-              (le::frame--skip-unless window (lambda (b) (eq b ms)) buffer)
-            (le::frame--skip-unless window #'keeper-project-p buffer)))
+          (let ((ms (le::frame--workspace-magit-status (window-buffer window))))
+            (cond
+             ;; Navigating: cycle workspace buffers, magit-status included but
+             ;; not forced (avoids the every-other-press snap-back).
+             ((memq this-command '(previous-buffer next-buffer))
+              (le::frame--skip-unless
+               window
+               (lambda (b) (or (and ms (eq b ms)) (keeper-project-p b)))
+               buffer))
+             ;; Refilling: prefer the live magit-status, else project buffers.
+             (ms (le::frame--skip-unless window (lambda (b) (eq b ms)) buffer))
+             (t (le::frame--skip-unless window #'keeper-project-p buffer)))))
          (t nil))))))
 
 ;;;; ---------------------------------------------------------------
