@@ -15,6 +15,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'magit))
+
 ;;;###autoload
 (defun le::magit-status-noselect (&optional dir)
   "Show magit-status for DIRECTORY without selecting the window.
@@ -32,7 +34,9 @@ Refreshes the buffer and scrolls to the top."
 ;;;###autoload
 (defun le::magit-refresh-maybe (directory)
   "Refresh the magit-status buffer for DIRECTORY if one exists."
-  (interactive (list (or (magit-toplevel) default-directory)))
+  (interactive (progn (require 'magit)
+                      (list (or (magit-toplevel) default-directory))))
+  (require 'magit)
   (when-let* ((default-directory directory)
               (buf (magit-get-mode-buffer 'magit-status-mode)))
     (with-current-buffer buf (magit-refresh))))
