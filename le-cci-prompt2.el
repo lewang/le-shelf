@@ -59,6 +59,7 @@
 (require 'org-src)
 (require 'org-duration)
 (require 'denote)
+(require 'le-denote)
 
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
 (declare-function claude-code-ide--get-buffer-name "claude-code-ide")
@@ -593,13 +594,12 @@ C-x C-s or commit, as always)."
          ;; the playground silo (prompt-log/'s parent), as
          ;; `le::cci-prompt2--create-log-file' does.
          (denote-directory (file-name-directory (directory-file-name dir)))
-         (id (funcall denote-get-identifier-function nil (current-time)))
-         (subtype (cadr (split-string (symbol-name mimetype) "/")))
-         (ext (concat "." (if (equal subtype "svg+xml") "svg" subtype)))
-         (path (denote-format-file-name dir id nil "screenshot" ext nil))
+         ;; The kernel mints the id (using that scoped scan) and writes
+         ;; <id>--screenshot.<ext> into DIR.
+         (res (le::denote-write-media dir mimetype data))
+         (path (car res))
+         (id (cdr res))
          (mk org-src--beg-marker))
-    (let ((coding-system-for-write 'no-conversion))
-      (write-region data nil path nil 'silent))
     (with-current-buffer (marker-buffer mk)
       (org-with-wide-buffer
        (goto-char mk)
