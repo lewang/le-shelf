@@ -25,7 +25,7 @@
   (if (save-excursion
         (goto-char (- (point) 2))
         (looking-at ") )"))
-      (backward-delete-char 1)))
+      (delete-char -1)))
 
 
 

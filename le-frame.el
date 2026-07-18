@@ -118,10 +118,7 @@ ALIST entry (size . tall|short) controls behavior (default short):
   "Return the sole window in the right column, or nil.
 Only matches when the frame has a 2-column split with exactly one
 window on the right side."
-  (let* ((first-col (cl-remove-if-not
-                     (lambda (w) (zerop (car (window-edges w))))
-                     (window-list nil 'no-mini)))
-         (right-col (cl-remove-if
+  (let* ((right-col (cl-remove-if
                      (lambda (w) (zerop (car (window-edges w))))
                      (window-list nil 'no-mini))))
     (when (= 1 (length right-col))
@@ -129,7 +126,8 @@ window on the right side."
 
 ;;;###autoload
 (defun le::frame--magit-status-p (buf _act)
-  "Return non-nil if BUF is a magit-status buffer for the current workspace or project."
+  "Return non-nil if BUF is a magit-status buffer for the current workspace
+or project."
   (when-let* ((b (get-buffer buf))
               (_ (eq (buffer-local-value 'major-mode b) 'magit-status-mode))
               (root (expand-file-name

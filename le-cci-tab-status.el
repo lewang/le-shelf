@@ -135,7 +135,8 @@ Removes itself first so it fires once and never aborts the user's command."
     (le::cci-tab--set-indicator project-dir nil)))
 
 (defun le::cci-tab--expire-stale-indicators ()
-  "Clear ✅ indicators that have been unvisited for more than `le::cci-tab-finished-max-age' seconds."
+  "Clear ✅ indicators that have been unvisited for more than
+`le::cci-tab-finished-max-age' seconds."
   (let ((now (float-time))
         stale)
     (maphash (lambda (dir set-time)

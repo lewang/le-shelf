@@ -14,7 +14,7 @@
 ;;; Code:
 
 ;;;###autoload
-(defun le::gptel-fill (beg end)
+(defun le::gptel-fill (beg _end)
   (when (bound-and-true-p gptel-mode)
     (save-excursion
       (goto-char beg)

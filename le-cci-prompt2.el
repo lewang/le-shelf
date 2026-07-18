@@ -321,8 +321,8 @@ recorded in the LOGBOOK of the heading at point, brackets included --
 e.g. \"[2026-07-14 Tue 17:47:45]\" -- or nil when the drawer's top
 line is not a \"- State\" entry.  Only the top line is examined:
 state lines are prepended (`le::cci-prompt2--insert-state-line'), so
-right after a flip the line at `org-log-beginning' is that flip's.  This is what the
-headline mirrors -- after every flip the headline's stamp is
+right after a flip the line at `org-log-beginning' is that flip's.
+This is what the headline mirrors -- after every flip the headline's stamp is
 rewritten to this value, so headline time == latest state change by
 construction, with no same-second formatting race."
   (save-excursion
@@ -663,9 +663,15 @@ On `org-src-mode-hook'; a no-op for src buffers of any other language."
 (cl-defstruct (le::cci-prompt2--state (:copier nil))
   "State for a prompt edit buffer."
   (cci-buffer nil :documentation "Target CCI session buffer.")
-  (origin-window nil :documentation "Window selected when this edit buffer opened; focus returns here on commit/cancel.  For a C-M-g handoff the setup hook selects the CCI window first, so this captures that rather than the throwaway temp-file window.")
+  (origin-window nil :documentation "Window selected when this edit buffer
+opened; focus returns here on commit/cancel.  For a C-M-g handoff the setup
+hook selects the CCI window first, so this captures that rather than the
+throwaway temp-file window.")
   (root nil :documentation "Expanded project root the prompt targets.")
-  (heading-id nil :documentation "Bracketed flip-stamp id of this prompt's heading, e.g. \"[2026-07-14 Tue 17:47:45]\" -- its EDITING flip time, stable for the whole edit session (the headline only changes again at the terminal flip, after which nothing looks it up).")
+  (heading-id nil :documentation "Bracketed flip-stamp id of this prompt's
+heading, e.g. \"[2026-07-14 Tue 17:47:45]\" -- its EDITING flip time, stable
+for the whole edit session (the headline only changes again at the terminal
+flip, after which nothing looks it up).")
   (file-path nil :documentation "Path of the log file the heading lives in.")
   (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
