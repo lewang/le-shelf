@@ -114,7 +114,7 @@ ALIST entry (size . tall|short) controls behavior (default short):
             (window--display-buffer buffer new-win 'window alist)))))))
 
 ;;;###autoload
-(defun le::frame--magit-status-p (buf _act)
+(defun le::frame-magit-status-p (buf _act)
   "Return non-nil if BUF is a magit-status buffer for the current workspace
 or project."
   (when-let* ((b (get-buffer buf))
@@ -129,7 +129,7 @@ or project."
 ;;;; ---------------------------------------------------------------
 
 ;;;###autoload
-(defun le::ide--compatible-layout ()
+(defun le::ide-compatible-layout ()
   "Check if the current window layout matches the expected 3-pane topology.
 Returns a plist (:cc-win W :top-left W :bottom-left W) when compatible,
 nil otherwise.
@@ -165,7 +165,6 @@ Compatibility requires:
                   :top-left top
                   :bottom-left bottom)))))))
 
-;;;###autoload
 (defun le::ide--adjust-windows (layout)
   "Resize windows in LAYOUT to match target IDE dimensions.
 LAYOUT is a plist with :cc-win, :top-left, and :bottom-left windows."
@@ -184,7 +183,6 @@ LAYOUT is a plist with :cc-win, :top-left, and :bottom-left windows."
             (window-resize bottom-left height-delta nil)
           (error nil))))))
 
-;;;###autoload
 (defun le::ide--file-in-project-p (file project-root)
   "Return non-nil if FILE belongs to the project at PROJECT-ROOT.
 Resolves FILE's own project and checks that its root matches
@@ -243,7 +241,7 @@ Two layout strategies:
                             (find-file-noselect file))
                           (dired-noselect project-root))))
     (le::debug-message "ide-reset: project-root=%s project-buf=%s" project-root project-buf)
-    (let ((compatiblep (le::ide--compatible-layout))
+    (let ((compatiblep (le::ide-compatible-layout))
           bottom-left)
       (if compatiblep
           (progn
@@ -277,7 +275,7 @@ Two layout strategies:
               (claude-code-ide-switch-to-buffer)
             (user-error (claude-code-ide)))))
       ;; Place magit directly in the bottom-left pane -- no dependence on the
-      ;; display-buffer-alist routing or on `le::ide--compatible-layout'.
+      ;; display-buffer-alist routing or on `le::ide-compatible-layout'.
       (le::debug-message "ide-reset: placing magit in bottom-left")
       (if (window-live-p bottom-left)
           (with-selected-window bottom-left
@@ -285,7 +283,7 @@ Two layout strategies:
               (le::magit-status-noselect project-root)))
         (le::magit-status-noselect project-root))
       (le::debug-message "ide-reset: adjusting window sizes")
-      (le::ide--adjust-windows (le::ide--compatible-layout))
+      (le::ide--adjust-windows (le::ide-compatible-layout))
       (le::debug-message "ide-reset: done"))))
 
 ;;;; ---------------------------------------------------------------
@@ -321,18 +319,18 @@ result would delete it)."
   "Return the current workspace's live magit-status buffer, or nil.
 EXCLUDE, when non-nil, is not considered (e.g. the buffer being killed).
 Relies on the caller having selected the relevant window/frame so that
-`le::frame--magit-status-p' resolves the intended workspace."
+`le::frame-magit-status-p' resolves the intended workspace."
   (seq-find (lambda (b)
               (and (buffer-live-p b)
                    (not (eq b exclude))
-                   (le::frame--magit-status-p b nil)))
+                   (le::frame-magit-status-p b nil)))
             (buffer-list)))
 
 ;;;###autoload
 (defun le::frame-prev-buffer-skip (window buffer _bury-or-kill)
   "`switch-to-prev-buffer-skip' predicate that keeps each IDE pane on its role.
 Only acts inside the recognized 3-pane layout for WINDOW's own frame
-\(`le::ide--compatible-layout'); elsewhere returns nil so Emacs behaves
+\(`le::ide-compatible-layout'); elsewhere returns nil so Emacs behaves
 normally.  In that layout:
 - top-left (project): skip BUFFER unless it is a workspace project buffer
   (per `le::ide--file-in-project-p', which counts `.le-playground' scratchpad
@@ -345,7 +343,7 @@ normally.  In that layout:
 - right (cci) / anything else: leave alone.
 Never skips so as to strand the window (see `le::frame--skip-unless')."
   (with-selected-window window
-    (when-let* ((layout (le::ide--compatible-layout))
+    (when-let* ((layout (le::ide-compatible-layout))
                 (ws-root (plist-get (w-current) :project-root)))
       (cl-flet ((keeper-project-p (b)
                   (when-let* ((f (buffer-file-name b)))

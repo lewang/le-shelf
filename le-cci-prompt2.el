@@ -979,7 +979,7 @@ by `le::cci-prompt2-edit'.  Restoring it on commit or cancel lands
 focus back where you were before composing -- the source buffer you
 invoked from, or the CCI session -- with no CCI-specific logic here:
 the one rule is \"put focus back\".  (A C-M-g handoff pre-selects the
-CCI window in `le::cci-prompt2--claude-prompt-file-setup' so the
+CCI window in `le::cci-prompt2-claude-prompt-file-setup' so the
 captured window is the session, not the throwaway temp-file window.)
 This is `select-window' on a window object, never
 `set-window-configuration', so the restored window's `window-start' is
@@ -1230,7 +1230,7 @@ print) to show MESSAGE-TEXT and restore `server-client-instructions'."
   (server-edit))
 
 ;;;###autoload
-(defun le::cci-prompt2--claude-prompt-file-setup ()
+(defun le::cci-prompt2-claude-prompt-file-setup ()
   "When visiting a Claude CLI prompt temp file, redirect editing to
 `le::cci-prompt2-edit' instead of editing the temp file directly.
 
@@ -1285,7 +1285,7 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
            "Editing with le::cci-prompt2-edit"))))))
 
 ;;;###autoload
-(add-hook 'server-switch-hook #'le::cci-prompt2--claude-prompt-file-setup)
+(add-hook 'server-switch-hook #'le::cci-prompt2-claude-prompt-file-setup)
 
 ;;;###autoload
 (defun le::cci-prompt2-vterm-send-C-g ()

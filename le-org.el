@@ -21,7 +21,6 @@
 (declare-function org-map-entries "org")
 (defvar org-attach-id-dir)
 
-;;;###autoload
 (defun le::--extract-html-title ()
   "Extract page title from HTML in current buffer.
 Tries og:title meta tag first, then <title> tag.  Handles HTML entities."
