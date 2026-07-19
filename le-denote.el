@@ -193,24 +193,27 @@ No side effects: the content pass runs on a copy of the subtree text."
                       meta))))))
 
 (defun le::denote-export--preview (nodes task-dir)
-  "Show, in *denote-export*, the files NODES will create in TASK-DIR."
+  "Show, in *denote-export*, the files NODES will create in TASK-DIR.
+The buffer is in `special-mode', so `q' buries it."
   (with-current-buffer (get-buffer-create "*denote-export*")
-    (erase-buffer)
-    (insert (format "denote export: %d task node(s) -> %s\n\n"
-                    (length nodes) task-dir))
-    (dolist (node nodes)
-      (insert (format "  %-16s ->  %s\n"
-                      (plist-get node :code)
-                      (file-name-nondirectory
-                       (denote-format-file-name
-                        task-dir
-                        (funcall denote-get-identifier-function nil (current-time))
-                        (plist-get node :keywords)
-                        (or (plist-get node :title) "")
-                        ".org"
-                        (plist-get node :code))))))
-    (insert "\n(identifiers above are illustrative; real ones are minted at creation)\n")
-    (insert "The source subtree will then be deleted from the journal buffer.\n")
+    (special-mode)
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (format "denote export: %d task node(s) -> %s\n\n"
+                      (length nodes) task-dir))
+      (dolist (node nodes)
+        (insert (format "  %-16s ->  %s\n"
+                        (plist-get node :code)
+                        (file-name-nondirectory
+                         (denote-format-file-name
+                          task-dir
+                          (funcall denote-get-identifier-function nil (current-time))
+                          (plist-get node :keywords)
+                          (or (plist-get node :title) "")
+                          ".org"
+                          (plist-get node :code))))))
+      (insert "\n(identifiers above are illustrative; real ones are minted at creation)\n")
+      (insert "The source subtree will then be deleted from the journal buffer.\n"))
     (goto-char (point-min))
     (display-buffer (current-buffer))))
 
@@ -240,32 +243,35 @@ and flushed to disk BEFORE the source subtree is deleted from the buffer."
                       (expand-file-name "task" (car (denote-directories))))))
       (unless nodes (user-error "No task nodes to export"))
       (le::denote-export--preview nodes task-dir)
-      (when (or (= (length nodes) 1)
-                (yes-or-no-p (format "Export %d task nodes into %s? "
-                                     (length nodes) task-dir)))
-        (make-directory task-dir t)
-        ;; `denote' opens each new file with `find-file'; keep that churn from
-        ;; disturbing the user's window layout.
-        (save-window-excursion
-          (let ((denote-kill-buffers t))
-            (dolist (node nodes)
-              ;; `denote' drifts `current-buffer' (find-file then kill), so
-              ;; re-assert the journal buffer each call: it carries the silo's
-              ;; buffer-local `denote-directory', which is what validates
-              ;; TASK-DIR.  Without this, calls after the first fall back to the
-              ;; global `denote-directory' and land in the wrong silo.
-              (with-current-buffer journal-buf
-                (denote (or (plist-get node :title) "")
-                        (plist-get node :keywords)
-                        'org
-                        task-dir
-                        nil
-                        (plist-get node :content)
-                        (plist-get node :code))))))
-        (with-current-buffer journal-buf
-          (delete-region (car region) (cdr region))
-          (save-buffer))
-        (message "Exported %d task node(s) to %s" (length nodes) task-dir)))))
+      (let ((proceed (or (= (length nodes) 1)
+                         (yes-or-no-p (format "Export %d task nodes into %s? "
+                                              (length nodes) task-dir)))))
+        ;; Dismiss the preview once the user has answered (bury, don't kill).
+        (quit-windows-on "*denote-export*")
+        (when proceed
+          (make-directory task-dir t)
+          ;; `denote' opens each new file with `find-file'; keep that churn from
+          ;; disturbing the user's window layout.
+          (save-window-excursion
+            (let ((denote-kill-buffers t))
+              (dolist (node nodes)
+                ;; `denote' drifts `current-buffer' (find-file then kill), so
+                ;; re-assert the journal buffer each call: it carries the silo's
+                ;; buffer-local `denote-directory', which is what validates
+                ;; TASK-DIR.  Without this, calls after the first fall back to the
+                ;; global `denote-directory' and land in the wrong silo.
+                (with-current-buffer journal-buf
+                  (denote (or (plist-get node :title) "")
+                          (plist-get node :keywords)
+                          'org
+                          task-dir
+                          nil
+                          (plist-get node :content)
+                          (plist-get node :code))))))
+          (with-current-buffer journal-buf
+            (delete-region (car region) (cdr region))
+            (save-buffer))
+          (message "Exported %d task node(s) to %s" (length nodes) task-dir))))))
 
 (provide 'le-denote)
 ;;; le-denote.el ends here
