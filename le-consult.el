@@ -82,6 +82,37 @@ through."
                  (w-buffer-in-project-p buf root))))
          result)))))
 
+(defun le::consult--prune-files (items-fn)
+  "Wrap a file source's ITEMS-FN to drop nested child-project files.
+Each consult file candidate is a (DISPLAY . ABSOLUTE-FILE) pair (see
+`consult-source-project-recent-file', whose `:items' returns root-relative
+display strings consed onto the expanded absolute name).  Build the merged
+super-project's `project-files' set once and keep a candidate only when its
+file is a member -- so a nested CHILD project's files (physically under the
+root but absent from the git-tracked union) are pruned from the parent's
+Project File list, while parent-repo and adopted `.le-playground' files pass.
+With no super-project, or an empty file set, the items pass through unchanged.
+
+Order is preserved (`seq-filter'), so consult's recentf MRU ordering and its
+native exclusion of already-open files (via `consult--buffer-file-hash') both
+survive -- this only removes the child's entries."
+  (lambda (&rest args)
+    (let ((result (apply items-fn args))
+          (pr (le::project-current)))
+      (if (not pr)
+          result
+        (let ((members (make-hash-table :test #'equal)))
+          (dolist (f (project-files pr))
+            (puthash (expand-file-name f) t members))
+          (if (zerop (hash-table-count members))
+              result
+            (seq-filter
+             (lambda (item)
+               (let ((file (if (consp item) (cdr item) item)))
+                 (or (not (stringp file))
+                     (gethash (expand-file-name file) members))))
+             result)))))))
+
 (defun le::consult--climb-source (source)
   "Return a copy of consult SOURCE whose `:items'/`:new' climb the super-project.
 Wrap the source's `:items' (and `:new', when present) so each runs with
@@ -90,23 +121,25 @@ every other property is inherited unchanged.  The global
 `consult-project-function' is untouched, so grep/ripgrep/find keep the native
 per-repo root.
 
-For buffer sources (`:category' `buffer') the wrapped `:items' also prunes
-nested child-project buffers via `le::consult--prune-buffers', so a child
-workspace's buffers do not appear in the parent's Project Buffer list.  File
-sources are widened only, not pruned: a parent's child repos are not
-exhaustively enumerable from recentf, so the recent-file list is left intact."
+Both buffer and file sources are also pruned of nested child-project entries:
+buffer sources via `le::consult--prune-buffers' (per-buffer `project-current'),
+file sources via `le::consult--prune-files' (membership in the super-project's
+git-tracked `project-files').  So a nested child workspace's buffers/files do
+not appear in the parent's Project Buffer/File lists, while parent-repo and
+adopted `.le-playground' entries pass."
   (let ((items (plist-get source :items))
         (new (plist-get source :new))
-        (bufferp (eq (plist-get source :category) 'buffer)))
+        (bufferp (eq (plist-get source :category) 'buffer))
+        (filep (eq (plist-get source :category) 'file)))
     (cl-flet ((climb (fn)
                 (lambda (&rest args)
                   (let ((consult-project-function #'le::consult--project-root))
                     (apply fn args)))))
       ;; Prepended `:items'/`:new' win over the spliced originals (plist-get
       ;; returns the first match); every other property comes from SOURCE.
-      `(:items ,(if bufferp
-                    (le::consult--prune-buffers (climb items))
-                  (climb items))
+      `(:items ,(cond (bufferp (le::consult--prune-buffers (climb items)))
+                      (filep (le::consult--prune-files (climb items)))
+                      (t (climb items)))
         ,@(when new (list :new (climb new)))
         ,@source))))
 
