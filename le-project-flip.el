@@ -20,24 +20,22 @@
 (require 'buffer-flip-buffers)
 
 (declare-function w-current "w" ())
+(declare-function w-buffer-in-project-p "w" (buf root))
 
 (defun le::project-flip--run (flip-fn)
   "Cycle buffers scoped to the current `w' workspace project, via FLIP-FN.
 FLIP-FN is `buffer-flip-forward' or `buffer-flip-backward'.  Resolve the
-workspace's `:project-root' and cycle only buffers whose `default-directory'
-is at or under it -- so the project's file buffers, dired, magit, shells, etc.
-are included and everything else is skipped (the nested `.le-playground'
-worktree is covered by physical nesting under the root).
+workspace's `:project-root' and cycle only buffers that belong to it per
+`w-buffer-in-project-p' -- the project's own file buffers, dired, magit,
+shells, etc., plus any adopted `.le-playground' scratchpad, while a nested
+CHILD project's buffers are skipped (they belong to their own workspace).
 
 Works by `let'-binding `buffer-flip-skip-patterns' with the skip predicate
 consed onto the front, then calling FLIP-FN, which captures the binding for the
 whole cycling session (see buffer-flip).  With no workspace project root, fall
 back to an unrestricted flip (both directions)."
   (if-let* ((root (plist-get (w-current) :project-root)))
-      (let* ((root (expand-file-name root))
-             (skip (lambda (buf)
-                     (let ((dir (buffer-local-value 'default-directory buf)))
-                       (not (and dir (file-in-directory-p dir root))))))
+      (let* ((skip (lambda (buf) (not (w-buffer-in-project-p buf root))))
              (buffer-flip-skip-patterns (cons skip buffer-flip-skip-patterns)))
         (funcall flip-fn))
     (funcall flip-fn)))
