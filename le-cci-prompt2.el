@@ -88,27 +88,34 @@ With prefix argument FORCE-CHOOSE, prompt for a CCI session and save
 the choice as a buffer-local override.  INITIAL-TEXT, if non-nil,
 seeds the draft.  Returns the edit buffer."
   (interactive "P")
+  ;; Offer to save the source buffer BEFORE any capture prompt — notably the
+  ;; "Subject heading:" ancestor picker in
+  ;; `le::cci-prompt2--capture-point-subject'.  We persist often, so the
+  ;; save-first prompt must precede every selection (subject heading AND CCI
+  ;; session).  Gate on a reference actually being produced for THIS file: an
+  ;; active region, or an active (non-terminal) ancestor heading, in a
+  ;; file-visiting buffer — both captures reference `buffer-file-name', so
+  ;; that is the file to persist.  The `--point-active-ancestors' probe here
+  ;; does not prompt (it only walks the outline), so it is safe to run first.
+  (when (and buffer-file-name
+             (or (use-region-p)
+                 (le::cci-prompt2--point-active-ancestors)))
+    (cond
+     ((not (file-exists-p buffer-file-name))
+      (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
+        (save-buffer)))
+     ((buffer-modified-p)
+      (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
+        (save-buffer)))))
   (let* ((origin-window (selected-window))
-         (src-buf (current-buffer))
          (region-ref (or (le::cci-prompt2--capture-region-ref)
                          (le::cci-prompt2--capture-point-subject)))
          (target (le::cci-prompt2--resolve-cci-target force-choose))
          (root (car target))
          (cci-buf (cdr target)))
+    ;; Now the target root is known: build the on-disk file reference, or
+    ;; drop it when the source is still unsaved (offer declined above).
     (when-let* ((file (plist-get region-ref :file)))
-      ;; Offer to save the source buffer before referencing it on disk —
-      ;; whether it's never been saved, or has unsaved edits.  Absent
-      ;; entirely (not just nil) when region-ref came from
-      ;; `le::cci-prompt2--capture-point-subject', which has no file range
-      ;; to offer.
-      (with-current-buffer src-buf
-        (cond
-         ((not (file-exists-p file))
-          (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
-            (save-buffer)))
-         ((buffer-modified-p)
-          (when (y-or-n-p (format "Save %s before referencing? " (buffer-name)))
-            (save-buffer)))))
       (if (file-exists-p file)
           (setq region-ref
                 (plist-put region-ref :ref-string
