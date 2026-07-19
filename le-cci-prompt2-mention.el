@@ -13,7 +13,7 @@
 
 ;; Active-region / point-subject capture for the Claude Code prompt
 ;; composer (see `le-cci-prompt2'): turn the source buffer's region (or
-;; the enclosing TODO/DOING heading) into a Claude Code "@PATH#RANGE"
+;; the enclosing active/non-terminal heading) into a Claude Code "@PATH#RANGE"
 ;; @-mention plus a "re: SUBJECT" line, and compose the edit buffer's
 ;; initial content around them.
 
@@ -49,21 +49,24 @@ buffer is not org-mode or the region starts above the first heading."
         (setq end (1- end)))
       (list :file buffer-file-name :beg beg :end end :subject subject))))
 
-(defun le::cci-prompt2--point-todo-doing-ancestors ()
-  "Return (SUBJECT . POINT) for each heading enclosing point whose TODO
-keyword is TODO or DOING, closest first.  SUBJECT has stars, keyword,
-priority, and tags stripped; POINT is the heading's buffer position,
-used to derive a location reference to it.  Walks from the heading
-containing point up through each ancestor to the top, filtering to
-just the qualifying ones -- an ancestor without a TODO/DOING keyword is
-skipped but does not stop the walk.  Empty (nil) when the buffer isn't
-org-mode, point is above the first heading, or no ancestor qualifies."
+(defun le::cci-prompt2--point-active-ancestors ()
+  "Return (SUBJECT . POINT) for each heading enclosing point in an active
+\(non-terminal) TODO state, closest first.  Active means the keyword is
+one of `org-not-done-keywords', so this tracks the buffer's own #+TODO
+sequence (REFINING/TODO/DOING/WAITING/HOLD and any custom state) rather
+than a hardcoded set.  SUBJECT has stars, keyword, priority, and tags
+stripped; POINT is the heading's buffer position, used to derive a
+location reference to it.  Walks from the heading containing point up
+through each ancestor to the top, filtering to just the qualifying ones
+-- an ancestor in a terminal (done) state or with no keyword is skipped
+but does not stop the walk.  Empty (nil) when the buffer isn't org-mode,
+point is above the first heading, or no ancestor qualifies."
   (when (and (derived-mode-p 'org-mode) (not (org-before-first-heading-p)))
     (save-excursion
       (org-back-to-heading t)
       (let (candidates)
         (while (progn
-                 (when (member (org-get-todo-state) '("TODO" "DOING"))
+                 (when (member (org-get-todo-state) org-not-done-keywords)
                    (push (cons (string-trim
                                 (substring-no-properties
                                  (org-get-heading t t t t)))
@@ -73,15 +76,15 @@ org-mode, point is above the first heading, or no ancestor qualifies."
         (nreverse candidates)))))
 
 (defun le::cci-prompt2--capture-point-subject ()
-  "Return a region-ref-shaped plist for the TODO/DOING heading enclosing
-point, or nil if none qualifies.  When more than one ancestor heading
+  "Return a region-ref-shaped plist for the active (non-terminal) heading
+enclosing point, or nil if none qualifies.  When more than one ancestor heading
 qualifies, prompts for which one, defaulting to the closest.  Includes
 :file/:beg/:end (the heading's own line, so the eventual @-mention
 points straight at it) when the buffer visits a file, else just
 :subject.  Used as the fallback to `le::cci-prompt2--capture-region-ref'
 when no region is active, so a \"re: SUBJECT\" line and a location
 reference still get added based on what task point is currently in."
-  (when-let* ((candidates (le::cci-prompt2--point-todo-doing-ancestors)))
+  (when-let* ((candidates (le::cci-prompt2--point-active-ancestors)))
     (let* ((chosen (if (cdr candidates)
                         (completing-read "Subject heading: " candidates nil t
                                          nil nil (caar candidates))
