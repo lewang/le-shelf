@@ -20,10 +20,13 @@
 
 ;;; Code:
 
+(require 'le-cci-prompt2-core)
+
 (declare-function le::cci-prompt2-edit "le-cci-prompt2")
 (declare-function vterm-send-key "vterm")
 (declare-function ghostel-send-C-g "ghostel")
 (declare-function server-edit "server")
+(declare-function claude-code-ide-send-prompt "claude-code-ide")
 
 (defvar claude-code-ide-mcp-server--sessions)
 (defvar claude-code-ide--routing-tokens)
@@ -122,6 +125,30 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
 
 ;;;###autoload
 (add-hook 'server-switch-hook #'le::cci-prompt2-claude-prompt-file-setup)
+
+;;;###autoload
+(defun le::cci-prompt2-quick (force-choose)
+  "Send a one-liner to a CCI session straight from the minibuffer.
+Ceremony-free sibling to `le::cci-prompt2-edit': no prompt-log
+heading, just a `read-string' and a send.  Resolves the target the
+same way as \"i\", via `le::cci-prompt2--resolve-cci-target' --
+FORCE-CHOOSE (the prefix arg) always offers the session picker.
+The target is resolved first so the minibuffer prompt can name the
+project root it will send to (the root directory's last component,
+e.g. \"foo\" for ~/src/foo).  Aborts on an empty prompt."
+  (interactive "P")
+  (let* ((target (le::cci-prompt2--resolve-cci-target force-choose))
+         (root (car target))
+         (cci-buf (cdr target))
+         (name (propertize (file-name-nondirectory (directory-file-name root))
+                           'face 'font-lock-keyword-face))
+         (text (read-string (format "Claude prompt (%s): " name))))
+    (unless (string-empty-p text)
+      (if (buffer-live-p cci-buf)
+          (with-current-buffer cci-buf
+            (claude-code-ide-send-prompt text))
+        (let ((default-directory root))
+          (claude-code-ide-send-prompt text))))))
 
 ;;;###autoload
 (defun le::cci-prompt2-vterm-send-C-g ()
