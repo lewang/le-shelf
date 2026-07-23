@@ -93,13 +93,14 @@ seeds the draft.  Returns the edit buffer."
   ;; `le::cci-prompt2--capture-point-subject'.  We persist often, so the
   ;; save-first prompt must precede every selection (subject heading AND CCI
   ;; session).  Gate on a reference actually being produced for THIS file: an
-  ;; active region, or an active (non-terminal) ancestor heading, in a
-  ;; file-visiting buffer — both captures reference `buffer-file-name', so
-  ;; that is the file to persist.  The `--point-active-ancestors' probe here
-  ;; does not prompt (it only walks the outline), so it is safe to run first.
+  ;; active region, or an ancestor heading carrying a TODO keyword (transient
+  ;; or done), in a file-visiting buffer — both captures reference
+  ;; `buffer-file-name', so that is the file to persist.  The
+  ;; `--point-todo-ancestors' probe here does not prompt (it only walks the
+  ;; outline), so it is safe to run first.
   (when (and buffer-file-name
              (or (use-region-p)
-                 (le::cci-prompt2--point-active-ancestors)))
+                 (le::cci-prompt2--point-todo-ancestors)))
     (cond
      ((not (file-exists-p buffer-file-name))
       (when (y-or-n-p (format "%s is not saved to disk.  Save now to add the reference? " (buffer-name)))
