@@ -11,6 +11,7 @@
 (require 'cl-lib)
 
 (declare-function w-current "w" ())
+(declare-function popper-popup-p "popper" (buf))
 (declare-function ediff-setup-windows-plain "ediff-wind" (buffer-a buffer-b buffer-c control-buffer))
 
 ;;;; ---------------------------------------------------------------
@@ -57,6 +58,31 @@ or project."
                      (or (plist-get (w-current) :project-root)
                          default-directory))))
     (string= root (expand-file-name (buffer-local-value 'default-directory b)))))
+
+;;;; ---------------------------------------------------------------
+;;;; IDE pane routing predicates
+;;;; ---------------------------------------------------------------
+
+;; Which of the two left-column IDE panes a buffer displays in, factored out of
+;; the `display-buffer-alist' rules so the buffer-flip entrances
+;; (`le::project-flip') can reuse the SAME routing when scoping a flip to a
+;; pane.  The alist is ordered short-before-tall, so the effective membership is
+;; mutually exclusive: bottom-left claims magit-status + popups, top-left gets
+;; everything else.
+
+;;;###autoload
+(defun le::frame-bottom-left-buffer-p (buf &optional act)
+  "Return non-nil if BUF displays in the short bottom-left IDE pane.
+That pane holds the workspace magit-status and any popper popup."
+  (or (le::frame-magit-status-p buf act)
+      (popper-popup-p (get-buffer buf))))
+
+;;;###autoload
+(defun le::frame-top-left-buffer-p (buf &optional _act)
+  "Return non-nil if BUF displays in the tall top-left IDE pane.
+Everything that does not route to the bottom-left pane (see
+`le::frame-bottom-left-buffer-p'): project file buffers, dired, shells."
+  (not (le::frame-bottom-left-buffer-p buf)))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup

@@ -21,6 +21,24 @@
 
 (declare-function w-current "w" ())
 (declare-function w-buffer-in-project-p "w" (buf root))
+(declare-function le::ide-compatible-layout "le-ide" ())
+(declare-function le::frame-top-left-buffer-p "le-frame" (buf &optional act))
+(declare-function le::frame-bottom-left-buffer-p "le-frame" (buf &optional act))
+
+(defun le::project-flip--pane-keep-p ()
+  "Return a keep-predicate for the selected IDE pane, or nil.
+When the selected window is a recognized left-column pane of the 3-pane
+IDE layout (`le::ide-compatible-layout'), return the same routing
+predicate `display-buffer-alist' uses to fill that pane -- so a flip
+cycles only buffers that would DISPLAY there: top-left drops popups and
+magit-status, bottom-left keeps only magit-status and popups.  Outside the
+layout, or in the cc window, return nil (no pane filtering)."
+  (when-let* ((layout (le::ide-compatible-layout)))
+    (let ((win (selected-window)))
+      (cond
+       ((eq win (plist-get layout :top-left))    #'le::frame-top-left-buffer-p)
+       ((eq win (plist-get layout :bottom-left)) #'le::frame-bottom-left-buffer-p)
+       (t nil)))))
 
 (defun le::project-flip--run (flip-fn)
   "Cycle buffers scoped to the current `w' workspace project, via FLIP-FN.
@@ -30,12 +48,20 @@ workspace's `:project-root' and cycle only buffers that belong to it per
 shells, etc., plus any adopted `.le-playground' scratchpad, while a nested
 CHILD project's buffers are skipped (they belong to their own workspace).
 
+Two composed filters: workspace membership, then -- when flipping inside a
+recognized IDE pane -- the selected window's display role (see
+`le::project-flip--pane-keep-p'), so cycling a pane never surfaces buffers
+that would display in a different pane (e.g. popups in the top-left).
+
 Works by `let'-binding `buffer-flip-skip-patterns' with the skip predicate
 consed onto the front, then calling FLIP-FN, which captures the binding for the
 whole cycling session (see buffer-flip).  With no workspace project root, fall
 back to an unrestricted flip (both directions)."
   (if-let* ((root (plist-get (w-current) :project-root)))
-      (let* ((skip (lambda (buf) (not (w-buffer-in-project-p buf root))))
+      (let* ((pane-keep-p (le::project-flip--pane-keep-p))
+             (skip (lambda (buf)
+                     (or (not (w-buffer-in-project-p buf root))
+                         (and pane-keep-p (not (funcall pane-keep-p buf))))))
              (buffer-flip-skip-patterns (cons skip buffer-flip-skip-patterns)))
         (funcall flip-fn))
     (funcall flip-fn)))
