@@ -61,9 +61,18 @@ Tries og:title meta tag first, then <title> tag.  Handles HTML entities."
 (defvar le::--org-link-placeholder "...fetching title...")
 
 ;;;###autoload
-(defun le::org-insert-link ()
-  "Insert org link from clipboard URL, asynchronously fetching the page title."
-  (interactive)
+(defun le::org-insert-link (&optional arg)
+  "Insert an Org link.
+Without a prefix, defer to `org-insert-link' (interactive target and
+description; edits a link at point).  With a prefix ARG, insert a link
+from the clipboard URL, asynchronously fetching the page title."
+  (interactive "P")
+  (if arg
+      (le::--org-insert-link-from-clipboard)
+    (call-interactively #'org-insert-link)))
+
+(defun le::--org-insert-link-from-clipboard ()
+  "Insert an Org link from the clipboard URL, async-fetching its <title>."
   (let ((url (current-kill 0)))
     (insert (format "[[%s][]]" url))
     (backward-char 2)
