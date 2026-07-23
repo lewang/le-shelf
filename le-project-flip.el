@@ -18,9 +18,8 @@
 ;;; Code:
 
 (require 'buffer-flip-buffers)
+(require 'w)
 
-(declare-function w-current "w" ())
-(declare-function w-buffer-in-project-p "w" (buf root))
 (declare-function le::ide-compatible-layout "le-ide" ())
 (declare-function le::frame-top-left-buffer-p "le-frame" (buf &optional act))
 (declare-function le::frame-bottom-left-buffer-p "le-frame" (buf &optional act))

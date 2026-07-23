@@ -29,8 +29,7 @@
 
 (require 'cl-lib)
 (require 'le-project)
-
-(declare-function w-buffer-in-project-p "w" (buf root))
+(require 'w)
 
 ;; Resolved lazily inside `le::consult-project-superset-setup' (autoloaded), so
 ;; declare consult's specials rather than requiring at file load.

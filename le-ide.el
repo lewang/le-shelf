@@ -10,8 +10,8 @@
 
 (require 'cl-lib)
 (require 'le-frame)                      ; le::frame-magit-window-height, le::frame-magit-status-p
+(require 'w)
 
-(declare-function w-current "w" ())
 (declare-function project-root "project" (project))
 (declare-function claude-code-ide "claude-code-ide" (&optional force-dir))
 (declare-function claude-code-ide-switch-to-buffer "claude-code-ide" ())

@@ -9,8 +9,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'w)
 
-(declare-function w-current "w" ())
 (declare-function popper-popup-p "popper" (buf))
 (declare-function ediff-setup-windows-plain "ediff-wind" (buffer-a buffer-b buffer-c control-buffer))
 
