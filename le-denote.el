@@ -21,6 +21,12 @@
 ;; `le-cci-prompt2's own `yank-media-handler' calls the same kernel and then
 ;; does its own two-sided referencing (an @-mention for the Claude CLI plus a
 ;; [[denote:<id>]] line in the log file); see le-cci-prompt2.el.
+;;
+;; `le::denote-plan-path' is a pure NAME ORACLE for the `dnc' CLI: given a
+;; target directory it mints an id and returns the sluggified denote path,
+;; writing nothing.  The CLI (which finds the silo itself) passes an absolute
+;; directory so naming never depends on this session's ambient project; `dnc'
+;; authors the file body.
 
 ;;; Code:
 
@@ -44,6 +50,24 @@ scope the scan.  DATA is written verbatim (`no-conversion')."
     (let ((coding-system-for-write 'no-conversion))
       (write-region data nil path nil 'silent))
     (cons path id)))
+
+;;;###autoload
+(defun le::denote-plan-path (dir title &optional keywords)
+  "Return the denote path for a plan named TITLE in DIR; write NOTHING.
+This is the pure name-oracle half of the `dnc plan' write verb: `dnc'
+locates the project's denote silo, passes DIR (the absolute `plan/'
+subdirectory) here, gets back a sluggified `<id>--<title>__<kw>.md' path,
+and authors the file body itself -- the body never crosses into Emacs.
+DIR is created if absent.  KEYWORDS is a list of keyword strings (nil for
+none).  The minted identifier's used-id scan is scoped to the silo (DIR's
+parent) by `let'-binding `denote-directory', so ids stay unique there.
+Passing DIR explicitly keeps naming independent of this session's ambient
+project (the live buffer may belong to a different one)."
+  (let* ((dir (file-name-as-directory (expand-file-name dir)))
+         (denote-directory (file-name-directory (directory-file-name dir)))
+         (id (funcall denote-get-identifier-function nil (current-time))))
+    (make-directory dir t)
+    (denote-format-file-name dir id keywords title ".md" nil)))
 
 ;;;###autoload
 (defun le::denote-yank-media (&optional prompt-title)
