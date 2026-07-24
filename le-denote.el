@@ -137,6 +137,52 @@ mark it machine-authored."
       entry)))
 
 ;;;###autoload
+(defun le::denote-add-heading (file anchor newcode level state title &optional body)
+  "Create task NEWCODE beneath ANCHOR in FILE; return the new heading line.
+This is the Emacs half of the `dnc add' write verb.  FILE is the absolute
+journal file; `dnc' has already done the arithmetic -- ANCHOR is the code of the
+heading at whose subtree-tail the new heading is inserted, NEWCODE is the
+computed `code=path' id, LEVEL the star count, STATE the birth keyword
+(REFINING or TODO), TITLE the description, and optional BODY initial prose.
+
+ANCHOR is located by its code token so the edit is content-addressed, not
+line-addressed; the new heading is placed at the end of ANCHOR's subtree, which
+serves both a new sibling (top-level member, ANCHOR = the group's last member)
+and a new child (ANCHOR = the parent).  A birth LOGBOOK note is seeded newest-in
+via `org-log-beginning' (empty \"from\", 🤖-tagged, time-stamped here), and BODY,
+when present, follows the drawer.
+
+Like `le::denote-logbook-append', the edit runs in a temp buffer over the file's
+DISK contents and is written back with `write-region' -- the visiting buffer, if
+any, is never touched."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (delay-mode-hooks (org-mode))
+    (goto-char (point-min))
+    (unless (re-search-forward
+             (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote anchor) "\\(?:[ \t]\\|$\\)")
+             nil t)
+      (error "No task heading for anchor %s in %s" anchor file))
+    (org-back-to-heading t)
+    (org-end-of-subtree t t)
+    (let* ((org-log-into-drawer "LOGBOOK")
+           (ts (format-time-string "[%Y-%m-%d %a %H:%M]"))
+           (heading (concat (make-string level ?*) " " state " " newcode " " title)))
+      (unless (bolp) (insert "\n"))
+      (let ((head-start (point)))
+        (insert heading "\n")
+        (when (and body (not (string-empty-p body)))
+          (insert body "\n"))
+        (goto-char head-start)
+        (org-back-to-heading t)
+        (goto-char (org-log-beginning t))
+        (insert (format "- State %-12s from %-12s %s 🤖\n"
+                        (format "\"%s\"" state) "" ts)))
+      (let ((coding-system-for-write 'utf-8))
+        (write-region (point-min) (point-max) file nil 'silent))
+      heading)))
+
+;;;###autoload
 (defun le::denote-yank-media (&optional prompt-title)
   "Paste a clipboard image beside the current file as a denote attachment.
 Save the image as <id>--screenshot.<ext> in the current file's own directory
