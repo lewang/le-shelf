@@ -27,6 +27,12 @@
 ;; writing nothing.  The CLI (which finds the silo itself) passes an absolute
 ;; directory so naming never depends on this session's ambient project; `dnc'
 ;; authors the file body.
+;;
+;; `le::denote-logbook-append' is the org-surgery half of `dnc logbook': it
+;; appends a well-formed, 🤖-tagged org-tasks LOGBOOK entry (a note or a state
+;; transition) to a task heading, editing the file's disk contents in a temp
+;; buffer so a visiting buffer is never disturbed.  Emacs owns the timestamp and
+;; the drawer format; `dnc' only resolves the `code=path' id to a file.
 
 ;;; Code:
 
@@ -68,6 +74,61 @@ project (the live buffer may belong to a different one)."
          (id (funcall denote-get-identifier-function nil (current-time))))
     (make-directory dir t)
     (denote-format-file-name dir id keywords title ".md" nil)))
+
+(defun le::denote--logbook-indent (text)
+  "Indent every line of TEXT by two spaces for a LOGBOOK note continuation."
+  (mapconcat (lambda (l) (concat "  " l)) (split-string text "\n") "\n"))
+
+;;;###autoload
+(defun le::denote-logbook-append (file code kind &optional text to-state)
+  "Append an org-tasks LOGBOOK entry to task CODE in FILE; return the entry text.
+This is the Emacs half of the `dnc logbook' write verb.  FILE is the absolute
+task file (`dnc' resolves CODE -> file by scanning the corpus); CODE is the
+heading's `code=path' id, located here by its token so the edit is
+content-addressed, not line-addressed.  KIND is \"note\" (a plain note) or
+\"state\" (a state transition); TEXT is the note body (nil/empty for a bare
+transition); TO-STATE is the new keyword for KIND \"state\".
+
+The edit runs in a temp buffer over the file's DISK contents and is written
+back with `write-region' -- the file's visiting buffer, if any, is never
+touched, so a user's unsaved edits are left for them to reconcile (an
+unmodified buffer auto-reverts; a modified one trips the save-time modtime
+guard).  The heading keyword is flipped by explicit text replacement, not
+`org-todo', so org's own state-logging hooks never fire and double-write.  The
+entry is inserted newest-first via `org-log-beginning', which creates the
+LOGBOOK drawer if absent.  Every entry is time-stamped here and tagged 🤖 to
+mark it machine-authored."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (delay-mode-hooks (org-mode))
+    (goto-char (point-min))
+    (unless (re-search-forward
+             (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote code) "\\(?:[ \t]\\|$\\)")
+             nil t)
+      (error "No task heading for code %s in %s" code file))
+    (beginning-of-line)
+    (let* ((org-log-into-drawer "LOGBOOK")
+           (ts (format-time-string "[%Y-%m-%d %a %H:%M]"))
+           (old-state
+            (when (equal kind "state")
+              (unless (looking-at "^\\*+[ \t]+\\([A-Z]+\\)[ \t]")
+                (error "Heading for %s has no state keyword" code))
+              (prog1 (match-string 1)
+                (replace-match to-state t t nil 1))))
+           (head (if (equal kind "state")
+                     (format "State %-12s from %-12s %s 🤖"
+                             (format "\"%s\"" to-state)
+                             (format "\"%s\"" old-state) ts)
+                   (format "Note taken on %s 🤖" ts)))
+           (entry (if (and text (not (string-empty-p text)))
+                      (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))
+                    (format "- %s\n" head))))
+      (org-back-to-heading t)
+      (goto-char (org-log-beginning t))
+      (insert entry)
+      (let ((coding-system-for-write 'utf-8))
+        (write-region (point-min) (point-max) file nil 'silent))
+      entry)))
 
 ;;;###autoload
 (defun le::denote-yank-media (&optional prompt-title)
