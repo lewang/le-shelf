@@ -86,8 +86,12 @@ This is the Emacs half of the `dnc logbook' write verb.  FILE is the absolute
 task file (`dnc' resolves CODE -> file by scanning the corpus); CODE is the
 heading's `code=path' id, located here by its token so the edit is
 content-addressed, not line-addressed.  KIND is \"note\" (a plain note) or
-\"state\" (a state transition); TEXT is the note body (nil/empty for a bare
-transition); TO-STATE is the new keyword for KIND \"state\".
+\"state\" (a state transition); TEXT is the accompanying prose (nil/empty for a
+bare transition); TO-STATE is the new keyword for KIND \"state\".
+
+TEXT renders per org-tasks convention: a state change's reason is a plain
+indented continuation, while a standalone note's body follows the `\\\\'
+line-break marker.
 
 The edit runs in a temp buffer over the file's DISK contents and is written
 back with `write-region' -- the file's visiting buffer, if any, is never
@@ -120,9 +124,15 @@ mark it machine-authored."
                              (format "\"%s\"" to-state)
                              (format "\"%s\"" old-state) ts)
                    (format "Note taken on %s 🤖" ts)))
-           (entry (if (and text (not (string-empty-p text)))
-                      (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))
-                    (format "- %s\n" head))))
+           (entry (cond
+                   ((or (null text) (string-empty-p text))
+                    (format "- %s\n" head))
+                   ;; A state change's reason is a plain indented continuation;
+                   ;; a standalone note's body follows the \\ line-break marker.
+                   ((equal kind "state")
+                    (format "- %s\n%s\n" head (le::denote--logbook-indent text)))
+                   (t
+                    (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))))))
       (org-back-to-heading t)
       (goto-char (org-log-beginning t))
       (insert entry)
