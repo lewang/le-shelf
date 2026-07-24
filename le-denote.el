@@ -89,9 +89,8 @@ content-addressed, not line-addressed.  KIND is \"note\" (a plain note) or
 \"state\" (a state transition); TEXT is the accompanying prose (nil/empty for a
 bare transition); TO-STATE is the new keyword for KIND \"state\".
 
-TEXT renders per org-tasks convention: a state change's reason is a plain
-indented continuation, while a standalone note's body follows the `\\\\'
-line-break marker.
+When TEXT is present it follows the head after a `\\\\' line-break marker,
+indented beneath -- the same shape for a note body and a state-change reason.
 
 The edit runs in a temp buffer over the file's DISK contents and is written
 back with `write-region' -- the file's visiting buffer, if any, is never
@@ -124,15 +123,12 @@ mark it machine-authored."
                              (format "\"%s\"" to-state)
                              (format "\"%s\"" old-state) ts)
                    (format "Note taken on %s 🤖" ts)))
-           (entry (cond
-                   ((or (null text) (string-empty-p text))
-                    (format "- %s\n" head))
-                   ;; A state change's reason is a plain indented continuation;
-                   ;; a standalone note's body follows the \\ line-break marker.
-                   ((equal kind "state")
-                    (format "- %s\n%s\n" head (le::denote--logbook-indent text)))
-                   (t
-                    (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))))))
+           (entry (if (and text (not (string-empty-p text)))
+                      ;; A body (note text or a state-change reason) follows the
+                      ;; \\ line-break marker, indented beneath -- the same shape
+                      ;; org itself uses, for both kinds.
+                      (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))
+                    (format "- %s\n" head))))
       (org-back-to-heading t)
       (goto-char (org-log-beginning t))
       (insert entry)
