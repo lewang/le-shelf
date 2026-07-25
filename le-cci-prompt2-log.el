@@ -24,6 +24,8 @@
 (require 'org)
 (require 'denote)
 
+(declare-function le::org-codepath-escape "le-org-codepath")
+
 ;;;; Log file management
 
 (defun le::cci-prompt2--create-log-file (dir)
@@ -209,7 +211,7 @@ position of the block body's start."
                     ;; if it is malformed; stamp "now" as a safety net.
                     (format-time-string
                      le::cci-prompt2--state-stamp-format))))
-        (org-edit-headline (if subject (format "%s re: %s" id subject) id))
+        (org-edit-headline (if subject (format "%s re: %s" id (le::org-codepath-escape subject)) id))
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
         (insert "#+begin_src le::cci-prompt2 -i\n")
@@ -254,7 +256,7 @@ ends up on the heading; point is unchanged otherwise."
   "Refresh the headline at point to ID plus \"re: SUBJECT\" when non-nil.
 `org-edit-headline' rewrites only the title, leaving the TODO keyword
 alone."
-  (org-edit-headline (if subject (format "%s re: %s" id subject) id)))
+  (org-edit-headline (if subject (format "%s re: %s" id (le::org-codepath-escape subject)) id)))
 
 (defun le::cci-prompt2--move-heading-to-final-zone ()
   "Move the terminal heading at point to the end of the final-state zone.

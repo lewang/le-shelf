@@ -40,6 +40,8 @@
 (require 'yank-media)
 (require 'org)
 
+(declare-function le::org-codepath-escape "le-org-codepath")
+
 (defun le::denote-write-media (dir mimetype data &optional title)
   "Write media DATA into DIR as a denote file; return (PATH . ID).
 MIMETYPE is a symbol like `image/png'; its subtype picks the extension
@@ -127,7 +129,8 @@ mark it machine-authored."
                       ;; A body (note text or a state-change reason) follows the
                       ;; \\ line-break marker, indented beneath -- the same shape
                       ;; org itself uses, for both kinds.
-                      (format "- %s \\\\\n%s\n" head (le::denote--logbook-indent text))
+                      (format "- %s \\\\\n%s\n" head
+                              (le::denote--logbook-indent (le::org-codepath-escape text)))
                     (format "- %s\n" head))))
       (org-back-to-heading t)
       (goto-char (org-log-beginning t))
@@ -167,12 +170,13 @@ any, is never touched."
     (org-end-of-subtree t t)
     (let* ((org-log-into-drawer "LOGBOOK")
            (ts (format-time-string "[%Y-%m-%d %a %H:%M]"))
-           (heading (concat (make-string level ?*) " " state " " newcode " " title)))
+           (heading (concat (make-string level ?*) " " state " " newcode " "
+                            (le::org-codepath-escape title))))
       (unless (bolp) (insert "\n"))
       (let ((head-start (point)))
         (insert heading "\n")
         (when (and body (not (string-empty-p body)))
-          (insert body "\n"))
+          (insert (le::org-codepath-escape body) "\n"))
         (goto-char head-start)
         (org-back-to-heading t)
         (goto-char (org-log-beginning t))
