@@ -4,7 +4,8 @@
 
 ;; Tag a denote note with the identity of the git checkout it lives under, so a
 ;; journal or task entry records which project (and which worktree of it) it
-;; belongs to.  The tags are denote-native atomic keywords -- a `project'/`worktree'
+;; belongs to.  Org notes only -- the `#+filetags:' this manages are Org front
+;; matter -- so every entry point verifies the file type before acting.  The tags are denote-native atomic keywords -- a `project'/`worktree'
 ;; prefix fused to the collapsed checkout name -- so the filename and the org
 ;; `#+filetags:' stay in lockstep and no forbidden character (hyphen, underscore,
 ;; space) ever lands inside a single keyword.
@@ -40,6 +41,11 @@
 ;; e.g. sweep a tree, using the pure query `le::denote-tasks-checkout-tags' to
 ;; pick each file's project/worktree tags.
 ;;
+;; `le::denote-tasks-dired-tag-marked' is that sweep from Dired: it plans the
+;; marked files (`le::denote-tasks--plan' drops those needing nothing), then
+;; either tags them all (prefix arg) or walks them with the usual
+;; `map-y-or-n-p' y/n/!/q prompt -- each accepted file applied atomically.
+;;
 ;; The pure core (collapse / tags / added / strip-project) is separated from the
 ;; git + denote shell so the naming rules are testable in isolation.
 
@@ -47,6 +53,8 @@
 
 (require 'denote)
 (require 'seq)
+
+(declare-function dired-get-marked-files "dired")
 
 ;;; Pure core --------------------------------------------------------------
 
@@ -116,6 +124,18 @@ tree."
                         project))))
       (cons project worktree))))
 
+(defun le::denote-tasks--name-for (file file-type keywords)
+  "The denote file name FILE would have with KEYWORDS, other parts kept.
+Mirror exactly what `denote-rename-file' builds -- same identifier, title and
+signature sources -- so comparing this to FILE answers \"needs rename?\"."
+  (denote-format-file-name
+   (file-name-directory file)
+   (denote-retrieve-filename-identifier file)
+   keywords
+   (or (denote-retrieve-title-or-filename file file-type) "")
+   (concat "." (file-name-extension file))
+   (or (denote-retrieve-filename-signature file) "")))
+
 ;;;###autoload
 (defun le::denote-tasks-checkout-tags (file)
   "Return the project/worktree filetags FILE should carry, or nil.
@@ -156,12 +176,17 @@ tag a file unattended -- e.g. to sweep a tree with
 is the current buffer's file, TAGS are derived, and a prefix arg sets
 NO-CONFIRM.  Return FILE's (possibly new) path.
 
-Signal a `user-error' when FILE is nil, has no denote front matter to treat as
-authoritative, or TAGS is nil and none can be derived for it."
+Only Org notes are supported (the `#+filetags:' the tooling manages are Org
+front matter).  Signal a `user-error' when FILE is nil, is not an Org note, has
+no denote front matter to treat as authoritative, or TAGS is nil and none can
+be derived for it."
   (interactive (list buffer-file-name nil current-prefix-arg))
   (unless file
     (user-error "No file to tag (buffer is not visiting a file?)"))
   (let ((file-type (denote-filetype-heuristics file)))
+    (unless (eq file-type 'org)
+      (user-error "%s is not an Org note (only Org notes are supported)"
+                  (abbreviate-file-name file)))
     (unless (denote-retrieve-front-matter-keywords-line file file-type)
       (user-error "%s has no denote front matter to treat as authoritative"
                   (abbreviate-file-name file)))
@@ -190,13 +215,7 @@ authoritative, or TAGS is nil and none can be derived for it."
         ;; Phase 2 -- sync the file-name cache to the (now-authoritative) front
         ;; matter.  NEW-NAME mirrors exactly what `denote-rename-file' would
         ;; build with these components, so the test is the real "needs rename?".
-        (let ((new-name (denote-format-file-name
-                         (file-name-directory file)
-                         (denote-retrieve-filename-identifier file)
-                         target
-                         (or (denote-retrieve-title-or-filename file file-type) "")
-                         (concat "." (file-name-extension file))
-                         (or (denote-retrieve-filename-signature file) ""))))
+        (let ((new-name (le::denote-tasks--name-for file file-type target)))
           (cond
            ((not (string= (expand-file-name new-name) (expand-file-name file)))
             (denote-rename-file file 'keep-current target
@@ -209,6 +228,64 @@ authoritative, or TAGS is nil and none can be derived for it."
                            (t (format "Already tagged %s"
                                       (mapconcat #'identity tags " ")))))
             file)))))))
+
+(defun le::denote-tasks--plan (file &optional tags)
+  "Return (:file FILE :tags TAGS :added ADDED) if FILE needs tagging, else nil.
+TAGS default to `le::denote-tasks-checkout-tags' for FILE.  Return nil -- so a
+batch caller drops it silently -- when FILE is not an Org denote note, has no
+front matter, no TAGS can be derived, or FILE already carries TAGS and its name
+already matches (i.e. there is nothing to do)."
+  (when (and file (file-regular-p file))
+    (let ((file-type (denote-filetype-heuristics file)))
+      (when (and (eq file-type 'org)
+                 (denote-retrieve-front-matter-keywords-line file file-type))
+        (setq tags (or tags (le::denote-tasks-checkout-tags file)))
+        (when tags
+          (let* ((current (denote-retrieve-front-matter-keywords-value file file-type))
+                 (added (le::denote-tasks--added current tags))
+                 (new-name (le::denote-tasks--name-for
+                            file file-type (append current added))))
+            (when (or added (not (string= (expand-file-name new-name)
+                                          (expand-file-name file))))
+              (list :file file :tags tags :added added))))))))
+
+;;;###autoload
+(defun le::denote-tasks-dired-tag-marked (&optional no-confirm)
+  "Tag the marked Dired files with each one's checkout project/worktree filetags.
+Operate on the marked files (or the file at point when none are marked).  For
+each that is an Org denote note under a git `.le-playground' checkout and
+actually needs a change, apply `le::denote-tasks-tag-file' (set the front
+matter, then rename to match); files that need nothing, are not Org notes, or
+lie outside such a checkout are skipped without a prompt.
+
+Without a prefix arg, confirm each file with the usual y/n/!/q prompt -- `y'
+tags it, `n' skips it, `!' tags all remaining, `q' stops.  With a prefix arg
+NO-CONFIRM, tag every eligible marked file without prompting.  Each file that
+is acted on is applied atomically (its per-file answer is the confirmation), so
+the front-matter and rename sub-prompts are suppressed."
+  (interactive "P")
+  (let ((plans (delq nil (mapcar #'le::denote-tasks--plan (dired-get-marked-files))))
+        ;; The per-file answer is the confirmation; apply each atomically.
+        (denote-rename-confirmations nil)
+        (denote-save-buffers t)
+        (done 0))
+    (if (null plans)
+        (message "No marked files need project/worktree tagging")
+      (let ((act (lambda (p)
+                   (le::denote-tasks-tag-file (plist-get p :file) (plist-get p :tags) t)
+                   (setq done (1+ done)))))
+        (if no-confirm
+            (mapc act plans)
+          (map-y-or-n-p
+           (lambda (p)
+             (let ((added (plist-get p :added)))
+               (format "Tag %s (%s)? "
+                       (file-name-nondirectory (plist-get p :file))
+                       (if added
+                           (concat "add " (mapconcat #'identity added " "))
+                         "rename to match front matter"))))
+           act plans '("file" "files" "tag"))))
+      (message "Tagged %d of %d eligible file(s)" done (length plans)))))
 
 (provide 'le-denote-tasks)
 ;;; le-denote-tasks.el ends here
