@@ -225,12 +225,27 @@ inside a denote silo)."
 ;; verbatim (promoted to level 1) plus its LOGBOOK and body; #+title is the
 ;; heading's description and #+signature is its code=path.  It is the inverse
 ;; of `denote-org-extract-org-subtree', which demotes the heading into #+title
-;; and drops the TODO state.  The tool never invents identity: a task node
-;; without a code=path aborts the whole run.
+;; and drops the TODO state.
 ;;
-;; Functional core (`le::denote-export--scan') returns a plan with no side
-;; effects; the interactive shell previews it, confirms, then creates files
-;; (flushed to disk) BEFORE deleting the source subtree.
+;; A region selects several subtrees for one run: it is expanded outward to
+;; whole subtrees at the shallowest heading level it touches
+;; (`le::denote-export--region-roots'), so a partial selection never yields a
+;; partial file.  A root heading without a TODO state aborts the run -- it has
+;; no destination file, and the source spans are deleted wholesale, so
+;; descending into it would drop its text on the floor.
+;;
+;; Three refusals run before anything is written, because the export is
+;; all-or-nothing and identity is never invented: a task node without a
+;; code=path, one code=path claimed twice within the selection, and a code=path
+;; that already names a file in task/.  The last one matters because denote will
+;; not catch it -- it mints a fresh identifier per file, so a re-export lands a
+;; second file with the same signature, which the `dnc' corpus then reads as an
+;; ambiguous code.
+;;
+;; Functional core (`le::denote-export--scan' over one span,
+;; `le::denote-export--plan' over many) returns a plan with no side effects; the
+;; interactive shell previews it, confirms, then creates files (flushed to disk)
+;; BEFORE deleting the source subtrees.
 
 (defun le::denote-export--parse-code (headline)
   "Split HEADLINE \"code=path description\" into (CODE . DESC).
@@ -298,125 +313,262 @@ are cut first (deepest-first) into their own entries."
             (delete-region beg end)))))
     result))
 
-(defun le::denote-export--scan ()
-  "Scan the subtree at point and return an export plan plist.
-Point must be on the subtree root heading.  The plan has:
+(defun le::denote-export--region-roots (beg end)
+  "Return whole-subtree spans ((BEG . END) ...) covering the region BEG..END.
+The region is expanded outward to the shallowest heading level it touches: the
+heading at or before BEG anchors the walk, the minimum level among that heading
+and every heading starting before END sets the root level, and the walk begins
+at the anchor's ancestor at that level.  A selection that clips a subtree
+therefore still exports it whole, and one that reaches across a shallower
+heading pulls in that heading instead of splitting under it.  Spans come back
+in buffer order and never overlap."
+  (save-excursion
+    (goto-char beg)
+    (org-back-to-heading t)
+    (let ((level (org-current-level)))
+      (save-excursion
+        (while (and (outline-next-heading) (< (point) end))
+          (setq level (min level (org-current-level)))))
+      (while (and (> (org-current-level) level) (org-up-heading-safe)))
+      (let (roots)
+        (while (and (org-at-heading-p) (< (point) end))
+          (let ((s (point))
+                (e (save-excursion (org-end-of-subtree t) (point))))
+            (push (cons s e) roots)
+            (goto-char e)
+            ;; A trailing subtree ends inside its own last line rather than on
+            ;; the next heading's bol, and `org-at-heading-p' is line-based --
+            ;; so it would answer t there and the walk would never advance.
+            ;; Only stay put when parked at the very start of a heading.
+            (unless (and (bolp) (org-at-heading-p))
+              (outline-next-heading))))
+        (nreverse roots)))))
+
+(defun le::denote-export--non-task-roots (roots)
+  "Return the headlines of the ROOTS spans whose heading carries no TODO state."
+  (let (result)
+    (save-excursion
+      (dolist (root roots)
+        (goto-char (car root))
+        (unless (org-get-todo-state)
+          (push (org-get-heading t t t t) result))))
+    (nreverse result)))
+
+(defun le::denote-export--scan (beg end)
+  "Scan the subtree spanning BEG..END and return an export plan plist.
+BEG must be the start of the subtree's root heading.  The plan has:
   :region  (BEG . END) of the source subtree in the current buffer;
   :uncoded a list of headline strings for task nodes lacking a code=path;
   :nodes   node plists (:code :state :title :keywords :content), present only
            when :uncoded is empty.
 No side effects: the content pass runs on a copy of the subtree text."
-  (org-back-to-heading t)
-  (let* ((beg (org-entry-beginning-position))
-         (end (save-excursion (org-end-of-subtree t) (point)))
-         (subtree-text (buffer-substring-no-properties beg end))
-         (meta '())
-         (uncoded '()))
-    (org-map-entries
-     (lambda ()
-       (when (org-get-todo-state)
-         (let* ((headline (org-get-heading t t t t))
-                (parsed (le::denote-export--parse-code headline)))
-           (if parsed
-               (push (list :code (car parsed)
-                           :state (org-get-todo-state)
-                           :title (cdr parsed)
-                           :keywords (mapcar #'substring-no-properties (org-get-tags)))
-                     meta)
-             (push headline uncoded)))))
-     nil 'tree)
-    (setq meta (nreverse meta)
-          uncoded (nreverse uncoded))
-    (if uncoded
-        (list :region (cons beg end) :uncoded uncoded)
-      (let ((contents (le::denote-export--extract-contents subtree-text)))
-        (list :region (cons beg end)
-              :nodes (mapcar
-                      (lambda (m)
-                        (append m (list :content
-                                        (cdr (assoc (plist-get m :code) contents)))))
-                      meta))))))
+  (save-excursion
+    (goto-char beg)
+    (let ((subtree-text (buffer-substring-no-properties beg end))
+          (meta '())
+          (uncoded '()))
+      (org-map-entries
+       (lambda ()
+         (when (org-get-todo-state)
+           (let* ((headline (org-get-heading t t t t))
+                  (parsed (le::denote-export--parse-code headline)))
+             (if parsed
+                 (push (list :code (car parsed)
+                             :state (org-get-todo-state)
+                             :title (cdr parsed)
+                             :keywords (mapcar #'substring-no-properties (org-get-tags)))
+                       meta)
+               (push headline uncoded)))))
+       nil 'tree)
+      (setq meta (nreverse meta)
+            uncoded (nreverse uncoded))
+      (if uncoded
+          (list :region (cons beg end) :uncoded uncoded)
+        (let ((contents (le::denote-export--extract-contents subtree-text)))
+          (list :region (cons beg end)
+                :nodes (mapcar
+                        (lambda (m)
+                          (append m (list :content
+                                          (cdr (assoc (plist-get m :code) contents)))))
+                        meta)))))))
 
-(defun le::denote-export--preview (nodes task-dir)
+(defun le::denote-export--duplicate-codes (nodes)
+  "Return the code=paths claimed by more than one node in NODES, in order.
+Two nodes sharing a code would take the same content -- the content lookup in
+`le::denote-export--scan' is an `assoc', which sees only the first -- and would
+land two task files under one identity."
+  (let ((seen '()) (dups '()))
+    (dolist (node nodes)
+      (let ((code (plist-get node :code)))
+        (cond ((member code dups))
+              ((member code seen) (push code dups))
+              (t (push code seen)))))
+    (nreverse dups)))
+
+(defun le::denote-export--plan (roots)
+  "Fold the per-root scans of the ROOTS spans into one export plan plist.
+ROOTS is a list of (BEG . END) subtree spans in buffer order.  The plan has:
+  :regions    the ROOTS spans, buffer order;
+  :uncoded    every uncoded task headline across ROOTS;
+  :nodes      every node across ROOTS in buffer order, present only when
+              :uncoded is empty;
+  :duplicates code=paths claimed by more than one node."
+  (let ((uncoded '()) (nodes '()))
+    (dolist (root roots)
+      (let ((plan (le::denote-export--scan (car root) (cdr root))))
+        (setq uncoded (append uncoded (plist-get plan :uncoded))
+              nodes (append nodes (plist-get plan :nodes)))))
+    (if uncoded
+        (list :regions roots :uncoded uncoded)
+      (list :regions roots
+            :nodes nodes
+            :duplicates (le::denote-export--duplicate-codes nodes)))))
+
+(defun le::denote-export--claimed-codes (task-dir)
+  "Return an alist (CODE . FILENAME) of signatures already used in TASK-DIR.
+Non-recursive, and scoped to TASK-DIR rather than the silo: `plan/' files carry
+their task's code=path in the same signature slot, so a wider scan would read
+a plan as a claim on its own task's identity."
+  (when (file-directory-p task-dir)
+    (delq nil
+          (mapcar (lambda (name)
+                    (when-let* ((sig (denote-retrieve-filename-signature name)))
+                      (cons sig name)))
+                  (directory-files task-dir nil directory-files-no-dot-files-regexp)))))
+
+(defun le::denote-export--collisions (nodes claimed)
+  "Return (CODE . FILENAME) for each node in NODES whose code is in CLAIMED.
+CLAIMED is an alist as returned by `le::denote-export--claimed-codes'."
+  (delq nil
+        (mapcar (lambda (node) (assoc (plist-get node :code) claimed))
+                nodes)))
+
+(defun le::denote-export--preview (nodes task-dir root-count)
   "Show, in *denote-export*, the files NODES will create in TASK-DIR.
-The buffer is in `special-mode', so `q' buries it."
-  (with-current-buffer (get-buffer-create "*denote-export*")
-    (special-mode)
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (insert (format "denote export: %d task node(s) -> %s\n\n"
-                      (length nodes) task-dir))
-      (dolist (node nodes)
-        (insert (format "  %-16s ->  %s\n"
-                        (plist-get node :code)
-                        (file-name-nondirectory
-                         (denote-format-file-name
-                          task-dir
-                          (funcall denote-get-identifier-function nil (current-time))
-                          (plist-get node :keywords)
-                          (or (plist-get node :title) "")
-                          ".org"
-                          (plist-get node :code))))))
-      (insert "\n(identifiers above are illustrative; real ones are minted at creation)\n")
-      (insert "The source subtree will then be deleted from the journal buffer.\n"))
-    (goto-char (point-min))
-    (display-buffer (current-buffer))))
+ROOT-COUNT is how many source subtrees the nodes came from.  The buffer is in
+`special-mode', so `q' buries it."
+  ;; One identifier for every row: each mint scans the whole silo, and the rows
+  ;; are illustrative anyway -- nothing is written, so they would all match.
+  (let ((id (funcall denote-get-identifier-function nil (current-time))))
+    (with-current-buffer (get-buffer-create "*denote-export*")
+      (special-mode)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "denote export: %d task node(s) from %d subtree(s) -> %s\n\n"
+                        (length nodes) root-count task-dir))
+        (dolist (node nodes)
+          (insert (format "  %-16s ->  %s\n"
+                          (plist-get node :code)
+                          (file-name-nondirectory
+                           (denote-format-file-name
+                            task-dir
+                            id
+                            (plist-get node :keywords)
+                            (or (plist-get node :title) "")
+                            ".org"
+                            (plist-get node :code))))))
+        (insert "\n(identifiers above are illustrative; real ones are minted at creation)\n")
+        (insert "The source subtree(s) will then be deleted from the journal buffer.\n"))
+      (goto-char (point-min))
+      (display-buffer (current-buffer)))))
 
 ;;;###autoload
-(defun le::denote-export-subtree ()
-  "Export the org subtree at point into denote task files, one per code=path.
-Point must be on a task-state heading in a buffer under a denote silo.  Every
-heading in the subtree carrying a TODO state is a node; each becomes a file in
+(defun le::denote-export-subtree (&optional beg end)
+  "Export org task subtrees into denote task files, one file per code=path.
+Without a region, point must be on a task-state heading and its subtree is the
+lone source.  With a region -- BEG..END, taken from the active region when
+called interactively -- the selection is expanded outward to whole subtrees at
+the shallowest heading level it touches and every one of them is exported in a
+single run.  A root heading without a TODO state aborts: the source spans are
+deleted wholesale, and such a heading has no file to carry its text into.
+
+Every heading carrying a TODO state is a node; each becomes a file in
 <`denote-directory'>/task/ named by its code=path, keeping the heading verbatim
 \(promoted to level 1), its LOGBOOK and body, and any non-task descendants.
 
-Refuse the whole run if any task node lacks a code=path.  Preview first; when
-more than one file will be created, confirm before writing.  Files are created
-and flushed to disk BEFORE the source subtree is deleted from the buffer."
-  (interactive)
-  (unless (and (derived-mode-p 'org-mode) (org-at-heading-p) (org-get-todo-state))
-    (user-error "Point must be on a task-state heading"))
+Refuse the whole run, writing nothing, when a task node lacks a code=path, when
+one code=path is claimed twice within the selection, or when a code=path already
+names a file in the task directory.  Preview first; when more than one file will
+be created, confirm before writing.  Files are created and flushed to disk
+BEFORE the source subtrees are deleted from the buffer."
+  (interactive (when (use-region-p) (list (region-beginning) (region-end))))
+  (unless (derived-mode-p 'org-mode)
+    (user-error "Not an Org buffer"))
   (let* ((journal-buf (current-buffer))
-         (plan (le::denote-export--scan))
-         (uncoded (plist-get plan :uncoded)))
-    (when uncoded
-      (user-error "Refusing to export: %d uncoded task node(s): %s"
-                  (length uncoded) (string-join uncoded "; ")))
-    (let* ((nodes (plist-get plan :nodes))
-           (region (plist-get plan :region))
-           (task-dir (file-name-as-directory
-                      (expand-file-name "task" (car (denote-directories))))))
-      (unless nodes (user-error "No task nodes to export"))
-      (le::denote-export--preview nodes task-dir)
-      (let ((proceed (or (= (length nodes) 1)
-                         (yes-or-no-p (format "Export %d task nodes into %s? "
-                                              (length nodes) task-dir)))))
-        ;; Dismiss the preview once the user has answered (bury, don't kill).
-        (quit-windows-on "*denote-export*")
-        (when proceed
-          (make-directory task-dir t)
-          ;; `denote' opens each new file with `find-file'; keep that churn from
-          ;; disturbing the user's window layout.
-          (save-window-excursion
-            (let ((denote-kill-buffers t))
-              (dolist (node nodes)
-                ;; `denote' drifts `current-buffer' (find-file then kill), so
-                ;; re-assert the journal buffer each call: it carries the silo's
-                ;; buffer-local `denote-directory', which is what validates
-                ;; TASK-DIR.  Without this, calls after the first fall back to the
-                ;; global `denote-directory' and land in the wrong silo.
-                (with-current-buffer journal-buf
-                  (denote (or (plist-get node :title) "")
-                          (plist-get node :keywords)
-                          'org
-                          task-dir
-                          nil
-                          (plist-get node :content)
-                          (plist-get node :code))))))
-          (with-current-buffer journal-buf
-            (delete-region (car region) (cdr region))
-            (save-buffer))
-          (message "Exported %d task node(s) to %s" (length nodes) task-dir))))))
+         (roots (if (and beg end)
+                    (le::denote-export--region-roots beg end)
+                  (progn
+                    (unless (and (org-at-heading-p) (org-get-todo-state))
+                      (user-error "Point must be on a task-state heading"))
+                    (list (cons (org-entry-beginning-position)
+                                (save-excursion (org-end-of-subtree t) (point))))))))
+    (unless roots
+      (user-error "No subtree in the region"))
+    (when-let* ((non-tasks (le::denote-export--non-task-roots roots)))
+      (user-error "Refusing to export: %d non-task root heading(s): %s"
+                  (length non-tasks) (string-join non-tasks "; ")))
+    (let* ((plan (le::denote-export--plan roots))
+           (uncoded (plist-get plan :uncoded)))
+      (when uncoded
+        (user-error "Refusing to export: %d uncoded task node(s): %s"
+                    (length uncoded) (string-join uncoded "; ")))
+      (let* ((nodes (plist-get plan :nodes))
+             (duplicates (plist-get plan :duplicates))
+             (regions (plist-get plan :regions))
+             (task-dir (file-name-as-directory
+                        (expand-file-name "task" (car (denote-directories)))))
+             (collisions (le::denote-export--collisions
+                          nodes (le::denote-export--claimed-codes task-dir))))
+        (unless nodes (user-error "No task nodes to export"))
+        (when duplicates
+          (user-error "Refusing to export: code=path claimed twice: %s"
+                      (string-join duplicates "; ")))
+        (when collisions
+          (user-error "Refusing to export: code=path already filed in %s: %s"
+                      task-dir
+                      (mapconcat (lambda (c) (format "%s -> %s" (car c) (cdr c)))
+                                 collisions "; ")))
+        (le::denote-export--preview nodes task-dir (length roots))
+        (let ((proceed (or (= (length nodes) 1)
+                           (yes-or-no-p (format "Export %d task nodes into %s? "
+                                                (length nodes) task-dir)))))
+          ;; Dismiss the preview once the user has answered (bury, don't kill).
+          (quit-windows-on "*denote-export*")
+          (when proceed
+            (make-directory task-dir t)
+            ;; `denote' opens each new file with `find-file'; keep that churn from
+            ;; disturbing the user's window layout.
+            (save-window-excursion
+              (let ((denote-kill-buffers t))
+                (dolist (node nodes)
+                  ;; `denote' drifts `current-buffer' (find-file then kill), so
+                  ;; re-assert the journal buffer each call: it carries the silo's
+                  ;; buffer-local `denote-directory', which is what validates
+                  ;; TASK-DIR.  Without this, calls after the first fall back to the
+                  ;; global `denote-directory' and land in the wrong silo.
+                  (with-current-buffer journal-buf
+                    (denote (or (plist-get node :title) "")
+                            (plist-get node :keywords)
+                            'org
+                            task-dir
+                            nil
+                            (plist-get node :content)
+                            (plist-get node :code))))))
+            (with-current-buffer journal-buf
+              ;; Back-to-front: deleting a later span leaves the earlier ones'
+              ;; positions untouched.
+              (dolist (region (reverse regions))
+                (delete-region (car region) (cdr region))
+                ;; A span stops inside its own last line, so its closing newline
+                ;; outlives it; take that and the blank lines that separated the
+                ;; subtree from what follows, or each export widens a gap.
+                (goto-char (car region))
+                (when (looking-at "\\(?:[ \t]*\n\\)+")
+                  (delete-region (point) (match-end 0))))
+              (save-buffer))
+            (deactivate-mark)
+            (message "Exported %d task node(s) from %d subtree(s) to %s"
+                     (length nodes) (length roots) task-dir)))))))
 
 (provide 'le-denote)
 ;;; le-denote.el ends here
