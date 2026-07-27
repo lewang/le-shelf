@@ -50,8 +50,19 @@
 ;; either tags them all (prefix arg) or walks them with the usual
 ;; `map-y-or-n-p' y/n/!/q prompt -- each accepted file applied atomically.
 ;;
-;; The pure core (collapse / tags / added / strip-project) is separated from the
-;; git + denote shell so the naming rules are testable in isolation.
+;; `le::denote-tasks-find-journal' reads those same tags the other way round: it
+;; opens the journal note of the checkout the current buffer lives under,
+;; creating it when there is none.  The wanted note is the one whose title is
+;; `journal <checkout root basename>' and whose keywords cover the checkout's
+;; tags -- per CHECKOUT, so a linked worktree keeps its own journal.  It walks up
+;; to the checkout rather than consulting `denote-directory', because it is meant
+;; to fire from a source buffer where the silo's `.dir-locals.el' never applies,
+;; and it judges candidates on their front matter, not their names.  Two matches
+;; is a mis-tagged note, so it refuses rather than picking one.
+;;
+;; The pure core (collapse / tags / added / strip-project / journal title +
+;; match) is separated from the git + denote shell so the naming rules are
+;; testable in isolation.
 
 ;;; Code:
 
@@ -89,6 +100,22 @@ Each is the prefix `project'/`worktree' fused to the collapsed name."
 (defun le::denote-tasks--added (current desired)
   "The DESIRED tags not already in CURRENT (order-stable)."
   (seq-remove (lambda (k) (member k current)) desired))
+
+(defun le::denote-tasks--journal-title (checkout)
+  "The title the journal note of CHECKOUT carries: \"journal <root basename>\".
+CHECKOUT is the checkout ROOT directory, so a linked worktree -- being its own
+directory -- gets a title distinct from the main checkout's, matching the
+per-checkout journal identity its filetags already express."
+  (concat "journal " (file-name-nondirectory (directory-file-name checkout))))
+
+(defun le::denote-tasks--journal-match-p (title keywords want-title want-tags)
+  "Non-nil when a note's TITLE and KEYWORDS identify it as the wanted journal.
+TITLE and KEYWORDS are read from the note's FRONT MATTER -- the source of truth
+here as everywhere in this file -- never from its file name, which is a
+regenerated cache of them.  TITLE must equal WANT-TITLE exactly; KEYWORDS need
+only COVER WANT-TAGS, so a journal the user has tagged further still matches."
+  (and (equal title want-title)
+       (null (le::denote-tasks--added keywords want-tags))))
 
 ;;; Imperative shell -------------------------------------------------------
 
@@ -341,6 +368,81 @@ the front-matter and rename sub-prompts are suppressed."
                          "rename to match front matter"))))
            act plans '("file" "files" "tag"))))
       (message "Tagged %d of %d eligible file(s)" done (length plans)))))
+
+(defun le::denote-tasks--journal-dir (checkout)
+  "The absolute `journal/' directory of CHECKOUT's playground denote silo."
+  (expand-file-name ".le-playground/denote/journal/" checkout))
+
+(defun le::denote-tasks--journal-matches (dir want-title want-tags)
+  "The Org notes directly in DIR whose front matter matches WANT-TITLE/WANT-TAGS.
+Non-recursive, and nil when DIR does not exist -- a checkout whose silo has no
+`journal/' yet simply has no journal."
+  (when (file-directory-p dir)
+    (seq-filter
+     (lambda (file)
+       (and (file-regular-p file)
+            (eq (denote-filetype-heuristics file) 'org)
+            (le::denote-tasks--journal-match-p
+             (denote-retrieve-front-matter-title-value file 'org)
+             (denote-retrieve-front-matter-keywords-value file 'org)
+             want-title want-tags)))
+     (directory-files dir t "\\.org\\'"))))
+
+(defun le::denote-tasks--journal-create (dir title tags)
+  "Create the journal note TITLE carrying TAGS in DIR; return its path.
+DIR is created first because `denote' refuses to create its own directory, and
+`denote-directory' is bound to the silo root so DIR reads as a subdirectory of
+it -- denote falls back to the ambient directory otherwise, landing the note in
+the wrong silo -- which also scopes the identifier's uniqueness scan to this
+silo.
+
+`denote-save-buffers' is forced on: by default `denote' leaves the new note in
+an unsaved buffer, so nothing reaches disk and the next lookup -- which reads
+front matter from FILES -- would find no journal and mint a second one."
+  (make-directory dir t)
+  (let ((denote-directory (file-name-directory (directory-file-name dir)))
+        (denote-save-buffers t))
+    (denote title tags 'org dir)))
+
+;;;###autoload
+(defun le::denote-tasks-find-journal ()
+  "Open the journal note of the checkout the current buffer lives under.
+Create it first when the checkout has none, then open it either way.
+
+Identity is per CHECKOUT, not per project: a linked worktree keeps its own
+journal.  So the note wanted here is the one whose title is `journal ' plus the
+basename of the checkout root and whose keywords cover
+`le::denote-tasks-checkout-tags' for this buffer (`project<name>' in a main
+checkout, plus `worktree<label>' in a linked one).
+
+The checkout is found by walking up from the buffer with
+`le::denote-tasks--checkout' rather than by consulting `denote-directory': this
+is meant to fire from a source buffer, where the silo's `.dir-locals.el' -- and
+so its `denote-directory' -- never applies.  Candidates in the silo's
+`journal/' are then judged on their front matter, not their file names.
+
+Signal a `user-error' when there is no `.le-playground' above the buffer
+\(creating the silo is a git-worktree operation -- see /playground-setup), when
+no project tags can be derived for it, or when two or more notes match: a
+duplicate means a mis-tagged note, and silently picking one would hide it."
+  (interactive)
+  (let* ((origin (or buffer-file-name default-directory))
+         (checkout
+          (or (le::denote-tasks--checkout origin)
+              (user-error "No `.le-playground' above %s (run /playground-setup)"
+                          (abbreviate-file-name origin))))
+         (tags (or (le::denote-tasks-checkout-tags origin)
+                   (user-error "No project/worktree tags for %s (a git checkout?)"
+                               (abbreviate-file-name checkout))))
+         (title (le::denote-tasks--journal-title checkout))
+         (dir (le::denote-tasks--journal-dir checkout))
+         (matches (le::denote-tasks--journal-matches dir title tags)))
+    (when (cdr matches)
+      (user-error "%d notes claim to be \"%s\" -- fix their front matter: %s"
+                  (length matches) title
+                  (mapconcat #'file-name-nondirectory matches ", ")))
+    (find-file (or (car matches)
+                   (le::denote-tasks--journal-create dir title tags)))))
 
 (provide 'le-denote-tasks)
 ;;; le-denote-tasks.el ends here
