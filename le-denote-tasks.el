@@ -39,7 +39,10 @@
 ;; arguments (the interactive spec fills them from the buffer, a nil TAGS to
 ;; derive, and the prefix arg), so Lisp can tag any file unattended --
 ;; e.g. sweep a tree, using the pure query `le::denote-tasks-checkout-tags' to
-;; pick each file's project/worktree tags.
+;; pick each file's project/worktree tags.  Each file's work runs inside that
+;; file's own buffer, so the right silo's `.dir-locals.el' are applied -- a
+;; cross-silo batch stays correct file by file, not stuck with the caller's
+;; ambient denote settings.
 ;;
 ;; `le::denote-tasks-dired-tag-marked' is that sweep from Dired: it plans the
 ;; marked files (`le::denote-tasks--plan' drops those needing nothing), then
@@ -148,41 +151,11 @@ checkout, so a batch caller can map it over a tree and skip the misses."
               (id (le::denote-tasks--identity checkout)))
     (le::denote-tasks--tags (car id) (cdr id))))
 
-;;;###autoload
-(defun le::denote-tasks-tag-file (file &optional tags no-confirm)
-  "Ensure TAGS are in FILE's front matter, then rename FILE to match.
-FILE is a denote note path.  TAGS is the list of keywords to guarantee
-present; when nil it defaults to `le::denote-tasks-checkout-tags' for FILE (the
-project/worktree tags of the git checkout FILE lives under).
-
-The front matter is the source of truth; the file name is a regenerated cache
-of it, of which only the identifier is guaranteed stable.  So this works in
-two phases:
-
-1. Set the front matter.  Read FILE's current keywords from its `#+filetags:'
-   (NOT the file name, which may be stale), union in any missing TAGS, and
-   write them back with `denote-rewrite-keywords' (no rename).  This stands on
-   its own: even if the rename below is declined, the tags are recorded.
-2. Sync the file name.  Compute the name that now reflects the front matter;
-   rename FILE to it with `denote-rename-file', or report it already matches.
-
-Unless NO-CONFIRM is non-nil, every change is confirmed with a prompt (the
-front-matter write, and the rename via `denote-rename-confirmations'); with
-NO-CONFIRM the changes are applied silently and the buffer is saved.
-
-This is a normal function, callable from Lisp: pass FILE (and NO-CONFIRM t) to
-tag a file unattended -- e.g. to sweep a tree with
-`le::denote-tasks-checkout-tags' picking each file's tags.  Interactively, FILE
-is the current buffer's file, TAGS are derived, and a prefix arg sets
-NO-CONFIRM.  Return FILE's (possibly new) path.
-
-Only Org notes are supported (the `#+filetags:' the tooling manages are Org
-front matter).  Signal a `user-error' when FILE is nil, is not an Org note, has
-no denote front matter to treat as authoritative, or TAGS is nil and none can
-be derived for it."
-  (interactive (list buffer-file-name nil current-prefix-arg))
-  (unless file
-    (user-error "No file to tag (buffer is not visiting a file?)"))
+(defun le::denote-tasks--tag-file-1 (file tags no-confirm)
+  "Tag FILE with TAGS then rename it to match; NO-CONFIRM as in the caller.
+The engine of `le::denote-tasks-tag-file' -- see it for the semantics.  Assumes
+the current buffer is FILE's own buffer, so the silo's directory-local settings
+are the ones denote uses; the caller establishes that context."
   (let ((file-type (denote-filetype-heuristics file)))
     (unless (eq file-type 'org)
       (user-error "%s is not an Org note (only Org notes are supported)"
@@ -228,6 +201,63 @@ be derived for it."
                            (t (format "Already tagged %s"
                                       (mapconcat #'identity tags " ")))))
             file)))))))
+
+;;;###autoload
+(defun le::denote-tasks-tag-file (file &optional tags no-confirm)
+  "Ensure TAGS are in FILE's front matter, then rename FILE to match.
+FILE is a denote note path.  TAGS is the list of keywords to guarantee
+present; when nil it defaults to `le::denote-tasks-checkout-tags' for FILE (the
+project/worktree tags of the git checkout FILE lives under).
+
+The front matter is the source of truth; the file name is a regenerated cache
+of it, of which only the identifier is guaranteed stable.  So this works in
+two phases:
+
+1. Set the front matter.  Read FILE's current keywords from its `#+filetags:'
+   (NOT the file name, which may be stale), union in any missing TAGS, and
+   write them back with `denote-rewrite-keywords' (no rename).  This stands on
+   its own: even if the rename below is declined, the tags are recorded.
+2. Sync the file name.  Compute the name that now reflects the front matter;
+   rename FILE to it with `denote-rename-file', or report it already matches.
+
+Unless NO-CONFIRM is non-nil, every change is confirmed with a prompt (the
+front-matter write, and the rename via `denote-rename-confirmations'); with
+NO-CONFIRM the changes are applied silently and the buffer is saved.
+
+The work runs inside FILE's own buffer, so the silo's `.dir-locals.el' (found
+by searching up from FILE, and mode-aware) and `default-directory' are the ones
+denote sees -- correct even when called from an unrelated buffer or across
+several silos in one batch.  A buffer this opens is killed afterwards unless it
+ended up modified, so a file already open (or with unsaved edits) is untouched.
+
+This is a normal function, callable from Lisp: pass FILE (and NO-CONFIRM t) to
+tag a file unattended -- e.g. to sweep a tree with
+`le::denote-tasks-checkout-tags' picking each file's tags.  Interactively, FILE
+is the current buffer's file, TAGS are derived, and a prefix arg sets
+NO-CONFIRM.  Return FILE's (possibly new) path.
+
+Only Org notes are supported (the `#+filetags:' the tooling manages are Org
+front matter).  Signal a `user-error' when FILE is nil, is not an Org note, has
+no denote front matter to treat as authoritative, or TAGS is nil and none can
+be derived for it."
+  (interactive (list buffer-file-name nil current-prefix-arg))
+  (unless file
+    (user-error "No file to tag (buffer is not visiting a file?)"))
+  (let* ((existing (find-buffer-visiting file))
+         (buffer (or existing (find-file-noselect file))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (le::denote-tasks--tag-file-1 file tags no-confirm))
+      ;; Only clean up a buffer we opened.  When NO-CONFIRM (unattended), save it
+      ;; -- `set-visited-file-name' during the rename marks it modified even
+      ;; though its content already matches disk -- then kill it, so a batch
+      ;; leaves no buffers behind.  Otherwise (interactive review) kill it only if
+      ;; it is clean, leaving anything with real unsaved edits for the user.
+      (when (and (not existing) (buffer-live-p buffer))
+        (when (and no-confirm (buffer-modified-p buffer))
+          (with-current-buffer buffer (save-buffer)))
+        (unless (buffer-modified-p buffer)
+          (kill-buffer buffer))))))
 
 (defun le::denote-tasks--plan (file &optional tags)
   "Return (:file FILE :tags TAGS :added ADDED) if FILE needs tagging, else nil.
