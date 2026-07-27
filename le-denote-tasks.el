@@ -29,8 +29,9 @@
 ;; `le::denote-tasks-tag-file' is FRONT MATTER FIRST: the `#+filetags:' is the
 ;; source of truth, the file name a regenerated cache of which only the
 ;; identifier is guaranteed stable.  So it (1) unions the tags into the note's
-;; current front-matter keywords and writes them back with
-;; `denote-rewrite-keywords' -- no rename, standing on its own -- then (2)
+;; current front-matter keywords and writes them back canonically with
+;; `le::denote-tasks--rewrite-keywords' -- no rename, standing on its own --
+;; then (2)
 ;; renames the file to match that front matter (or reports the name is already
 ;; correct).  Every change is confirmed with a prompt unless NO-CONFIRM, in
 ;; which case all changes apply silently and the buffer is saved.
@@ -139,6 +140,29 @@ signature sources -- so comparing this to FILE answers \"needs rename?\"."
    (concat "." (file-name-extension file))
    (or (denote-retrieve-filename-signature file) "")))
 
+(defun le::denote-tasks--rewrite-keywords (file keywords file-type save)
+  "Write KEYWORDS into FILE's `#+filetags:' line, canonically, given FILE-TYPE.
+Like `denote-rewrite-keywords', but replace the WHOLE keywords line, not only
+its value.  Denote's own rewrite preserves the existing key and whatever
+spacing follows it (`denote--rewrite-front-matter-line'), so a source line with
+no padding -- a bare `#+filetags:' -- yields `#+filetags::tag:'.  Formatting the
+replacement with denote's own front-matter formatter keeps the canonical
+padding (one source of truth) and normalizes such lines as it writes.  With
+SAVE non-nil, save the buffer.  Assumes the current buffer visits FILE."
+  (let* ((front-matter
+          (denote--format-front-matter "" (current-time) keywords "" "" file-type))
+         (line (denote--retrieve-front-matter-keywords-line-from-content
+                front-matter file-type)))
+    (with-current-buffer (find-file-noselect file)
+      (save-excursion
+        (save-restriction
+          (widen)
+          (goto-char (point-min))
+          (when (re-search-forward (denote--keywords-key-regexp file-type) nil t 1)
+            (delete-region (line-beginning-position) (line-end-position))
+            (insert line)
+            (when save (save-buffer))))))))
+
 ;;;###autoload
 (defun le::denote-tasks-checkout-tags (file)
   "Return the project/worktree filetags FILE should carry, or nil.
@@ -184,7 +208,7 @@ are the ones denote uses; the caller establishes that context."
         ;; Phase 1 -- front matter is authoritative; write it independently of
         ;; the rename so a declined rename never drops the tags.
         (when write-fm
-          (denote-rewrite-keywords file target file-type denote-save-buffers))
+          (le::denote-tasks--rewrite-keywords file target file-type denote-save-buffers))
         ;; Phase 2 -- sync the file-name cache to the (now-authoritative) front
         ;; matter.  NEW-NAME mirrors exactly what `denote-rename-file' would
         ;; build with these components, so the test is the real "needs rename?".
@@ -215,8 +239,9 @@ two phases:
 
 1. Set the front matter.  Read FILE's current keywords from its `#+filetags:'
    (NOT the file name, which may be stale), union in any missing TAGS, and
-   write them back with `denote-rewrite-keywords' (no rename).  This stands on
-   its own: even if the rename below is declined, the tags are recorded.
+   write them back canonically with `le::denote-tasks--rewrite-keywords' (no
+   rename).  This stands on its own: even if the rename below is declined, the
+   tags are recorded.
 2. Sync the file name.  Compute the name that now reflects the front matter;
    rename FILE to it with `denote-rename-file', or report it already matches.
 
