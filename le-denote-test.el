@@ -1,14 +1,18 @@
-;;; le-denote-test.el --- Tests for le-denote's subtree exporter  -*- lexical-binding: t; -*-
+;;; le-denote-test.el --- Tests for le-denote's settled-tree sweep  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; ERT tests for the functional core of `le::denote-export-subtree': region ->
-;; root spans, the multi-root plan fold, and the two identity guards.  Nothing
-;; here touches a denote silo or creates a file -- the buffer-based helpers run
-;; in a temp Org buffer, the rest are pure.  Run in batch:
+;; ERT tests for the functional core of `le::denote-export-settled': region ->
+;; level-1 tree spans, the per-tree judgement fold, and the two identity guards.
+;; Nothing here touches a denote silo or creates a file -- the buffer-based
+;; helpers run in a temp Org buffer, the rest are pure.  Run in batch:
 ;;
-;;   emacs -Q -batch -L . -L <elpaca-builds>/denote \
-;;     -l le-denote.el -l le-denote-test.el -f ert-run-tests-batch-and-exit
+;;   emacs -Q -batch -L "$PWD" -L <elpaca-builds>/denote \
+;;     -l "$PWD/le-denote.el" -l "$PWD/le-denote-test.el" \
+;;     -f ert-run-tests-batch-and-exit
+;;
+;; The paths must be absolute: `-l le-denote.el' is resolved against `load-path'
+;; rather than the working directory, so the relative form fails to load.
 
 ;;; Code:
 
@@ -16,11 +20,16 @@
 (require 'le-denote)
 
 (defmacro le-denote-test--with-org (text &rest body)
-  "Evaluate BODY in an Org temp buffer holding TEXT, point at `point-min'."
+  "Evaluate BODY in an Org temp buffer holding TEXT, point at `point-min'.
+The buffer declares the silo's keyword set, so `org-done-keywords' holds both
+DONE and CANCELLED.  Under `emacs -Q' it holds DONE alone and CANCELLED is not a
+keyword at all, which would read a CANCELLED heading as a non-task."
   (declare (indent 1) (debug t))
   `(with-temp-buffer
      (delay-mode-hooks (org-mode))
+     (insert "#+TODO: REFINING TODO DOING WAITING HOLD | DONE CANCELLED\n")
      (insert ,text)
+     (org-set-regexps-and-options)
      (goto-char (point-min))
      ,@body))
 
@@ -38,6 +47,18 @@
               (goto-char (car root))
               (org-get-heading t t t t)))
           roots))
+
+(defun le-denote-test--trees (&optional claimed)
+  "Return the plan's trees for the whole buffer, judged against CLAIMED."
+  (plist-get (le::denote-export--plan
+              (le::denote-export--region-roots (point-min) (point-max))
+              claimed)
+             :trees))
+
+(defun le-denote-test--codes (trees)
+  "Return the code=path of every node in TREES, in order."
+  (mapcar (lambda (node) (plist-get node :code))
+          (le::denote-export--nodes trees)))
 
 
 ;;;; le::denote-export--region-roots
@@ -72,8 +93,20 @@
                      (point-max)))
                    '("foo=1 alpha")))))
 
-(ert-deftest le::denote-export--region-roots/expands-outward-to-shallowest ()
-  "Reaching a shallower heading lifts the walk to that level, not below it."
+(ert-deftest le::denote-export--region-roots/level-1-ancestor ()
+  "A region wholly inside a child yields that child's level-1 ancestor.
+Level 1 is the only root level, so a finished child is never taken out of a
+live parent."
+  (le-denote-test--with-org
+      "* DOING foo=1 alpha\n** DONE foo=1=1 beta\n* TODO foo=2 gamma\n"
+    (should (equal (le-denote-test--root-headings
+                    (le::denote-export--region-roots
+                     (le-denote-test--bol "foo=1=1")
+                     (le-denote-test--bol "foo=2")))
+                   '("foo=1 alpha")))))
+
+(ert-deftest le::denote-export--region-roots/reaches-past-a-child ()
+  "A region opening in a child and running on takes both level-1 trees."
   (le-denote-test--with-org
       "* TODO foo=1 alpha\n** TODO foo=1=1 beta\n* TODO foo=2 gamma\n"
     (should (equal (le-denote-test--root-headings
@@ -111,60 +144,134 @@ empty line behind."
                      "\n")))))
 
 
-;;;; le::denote-export--non-task-roots
-
-(ert-deftest le::denote-export--non-task-roots/flags-container-heading ()
-  "A root without a TODO state is reported by its headline."
-  (le-denote-test--with-org
-      "* 2026-07-26\n** TODO foo=1 alpha\n"
-    (should (equal (le::denote-export--non-task-roots
-                    (le::denote-export--region-roots (point-min) (point-max)))
-                   '("2026-07-26")))))
-
-(ert-deftest le::denote-export--non-task-roots/task-roots-pass ()
-  "Roots that all carry a TODO state produce no complaint."
-  (le-denote-test--with-org
-      "* TODO foo=1 alpha\n* TODO foo=2 beta\n"
-    (should-not (le::denote-export--non-task-roots
-                 (le::denote-export--region-roots (point-min) (point-max))))))
-
-
 ;;;; le::denote-export--plan
 
-(ert-deftest le::denote-export--plan/nodes-across-roots-in-order ()
-  "Nodes from every root are folded into one list, in buffer order."
+(ert-deftest le::denote-export--plan/nodes-in-buffer-order ()
+  "Settled trees carry no skip reason, and their nodes come in buffer order."
   (le-denote-test--with-org
-      "* TODO foo=1 alpha\n** TODO foo=1=1 beta\n* TODO foo=2 gamma\n"
-    (let ((plan (le::denote-export--plan
-                 (le::denote-export--region-roots (point-min) (point-max)))))
-      (should (equal (mapcar (lambda (n) (plist-get n :code)) (plist-get plan :nodes))
-                     '("foo=1" "foo=1=1" "foo=2")))
-      (should-not (plist-get plan :uncoded))
-      (should-not (plist-get plan :duplicates)))))
-
-(ert-deftest le::denote-export--plan/uncoded-in-any-root-suppresses-nodes ()
-  "An uncoded node in the second root voids the whole plan's :nodes."
-  (le-denote-test--with-org
-      "* TODO foo=1 alpha\n* TODO refactor parser\n"
-    (let ((plan (le::denote-export--plan
-                 (le::denote-export--region-roots (point-min) (point-max)))))
-      (should (equal (plist-get plan :uncoded) '("refactor parser")))
-      (should-not (plist-get plan :nodes)))))
-
-(ert-deftest le::denote-export--plan/duplicate-code-across-roots ()
-  "One code=path claimed by two roots is reported in :duplicates."
-  (le-denote-test--with-org
-      "* TODO foo=1 alpha\n* TODO foo=1 alpha again\n"
-    (let ((plan (le::denote-export--plan
-                 (le::denote-export--region-roots (point-min) (point-max)))))
-      (should (equal (plist-get plan :duplicates) '("foo=1"))))))
+      "* DONE foo=1 alpha\n** DONE foo=1=1 beta\n* DONE foo=2 gamma\n"
+    (let ((trees (le-denote-test--trees)))
+      (should (equal (mapcar (lambda (tree) (plist-get tree :skip)) trees) '(nil nil)))
+      (should (equal (le-denote-test--codes trees) '("foo=1" "foo=1=1" "foo=2"))))))
 
 (ert-deftest le::denote-export--plan/regions-are-the-roots ()
-  ":regions echoes the spans it was handed."
+  "Each tree carries the span it was judged from."
   (le-denote-test--with-org
-      "* TODO foo=1 alpha\n* TODO foo=2 beta\n"
+      "* DONE foo=1 alpha\n* DONE foo=2 beta\n"
     (let ((roots (le::denote-export--region-roots (point-min) (point-max))))
-      (should (equal (plist-get (le::denote-export--plan roots) :regions) roots)))))
+      (should (equal (mapcar (lambda (tree) (plist-get tree :region))
+                             (plist-get (le::denote-export--plan roots nil) :trees))
+                     roots)))))
+
+(ert-deftest le::denote-export--plan/skips-non-task-root ()
+  "A root with no TODO state is skipped as :not-task, which outranks :open."
+  (le-denote-test--with-org
+      "* 2026-07-26\n** DOING foo=1 alpha\n"
+    (let ((tree (car (le-denote-test--trees))))
+      (should (eq (plist-get tree :skip) :not-task))
+      (should (equal (plist-get tree :headline) "2026-07-26")))))
+
+(ert-deftest le::denote-export--plan/skips-open-tree ()
+  "A tree holding an unclosed task heading is skipped as :open, naming it."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\n** DOING foo=1=1 beta\n"
+    (let ((tree (car (le-denote-test--trees))))
+      (should (eq (plist-get tree :skip) :open))
+      (should (equal (plist-get tree :detail) '("DOING foo=1=1 beta"))))))
+
+(ert-deftest le::denote-export--plan/skips-uncoded-tree-alone ()
+  "An uncoded task heading skips its own tree and lets its sibling through."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\n* DONE refactor parser\n"
+    (let ((trees (le-denote-test--trees)))
+      (should-not (plist-get (nth 0 trees) :skip))
+      (should (eq (plist-get (nth 1 trees) :skip) :uncoded))
+      (should (equal (plist-get (nth 1 trees) :detail) '("refactor parser"))))))
+
+(ert-deftest le::denote-export--plan/skips-both-duplicate-claimants ()
+  "A code=path claimed by two trees skips both of them."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\n* DONE foo=1 alpha again\n"
+    (let ((trees (le-denote-test--trees)))
+      (should (equal (mapcar (lambda (tree) (plist-get tree :skip)) trees)
+                     '(:duplicate :duplicate)))
+      (should (equal (plist-get (nth 0 trees) :detail) '("foo=1"))))))
+
+(ert-deftest le::denote-export--plan/skips-colliding-tree-alone ()
+  "A code=path already filed skips only the tree claiming it."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\n* DONE foo=2 beta\n"
+    (let ((trees (le-denote-test--trees
+                  '(("foo=1" . "20260719T190750==foo=1--alpha.org")))))
+      (should (eq (plist-get (nth 0 trees) :skip) :collision))
+      (should (equal (plist-get (nth 0 trees) :detail)
+                     '("foo=1 -> 20260719T190750==foo=1--alpha.org")))
+      (should-not (plist-get (nth 1 trees) :skip)))))
+
+(ert-deftest le::denote-export--plan/reason-precedence ()
+  "An open tree that is also uncoded reports :open -- the first reason wins."
+  (le-denote-test--with-org
+      "* DOING foo=1 alpha\n** DONE refactor parser\n"
+    (should (eq (plist-get (car (le-denote-test--trees)) :skip) :open))))
+
+(ert-deftest le::denote-export--plan/open-tree-does-not-poison-duplicates ()
+  "A skipped tree's codes are not claims, so a settled twin still files."
+  (le-denote-test--with-org
+      "* DOING foo=1 alpha\n* DONE foo=1 twin\n"
+    (let ((trees (le-denote-test--trees)))
+      (should (eq (plist-get (nth 0 trees) :skip) :open))
+      (should-not (plist-get (nth 1 trees) :skip)))))
+
+(ert-deftest le::denote-export--plan/cancelled-tree-is-settled ()
+  "CANCELLED is in `org-done-keywords' here, so a cancelled tree files."
+  (le-denote-test--with-org
+      "* CANCELLED foo=1 alpha\n"
+    (should-not (plist-get (car (le-denote-test--trees)) :skip))))
+
+(ert-deftest le::denote-export--plan/content-only-for-survivors ()
+  "Content is extracted for the trees that will be filed, and for no others."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\nbody\n* DOING foo=2 beta\n"
+    (let* ((trees (le-denote-test--trees))
+           (filed (car (le::denote-export--nodes
+                        (le::denote-export--filed trees))))
+           (skipped (car (plist-get (nth 1 trees) :nodes))))
+      (should (equal (plist-get filed :content) "* DONE foo=1 alpha\nbody\n"))
+      (should-not (plist-get skipped :content)))))
+
+
+;;;; le::denote-export--report
+
+(ert-deftest le::denote-export--report/lists-the-files-to-be-written ()
+  "A filed tree is counted in the summary and gets a preview row."
+  (le-denote-test--with-org
+      "* DONE foo=1 alpha\n"
+    (let ((report (le::denote-export--report
+                   (le-denote-test--trees) "/tmp/task/" "20260727T000000")))
+      (should (string-match-p "1 tree(s) seen; 1 to file, 1 task node(s)" report))
+      (should (string-match-p "foo=1 +-> +20260727T000000" report)))))
+
+(ert-deftest le::denote-export--report/names-the-root-once ()
+  "A tree tripped by its own root reads once, with its state; children list."
+  (le-denote-test--with-org
+      "* DOING foo=1 alpha\n** WAITING foo=1=1 beta\n"
+    (let ((report (le::denote-export--report
+                   (le-denote-test--trees) "/tmp/task/" "20260727T000000")))
+      (should (string-match-p "^  DOING foo=1 alpha$" report))
+      (should-not (string-match-p "^      DOING foo=1 alpha$" report))
+      (should (string-match-p "^      WAITING foo=1=1 beta$" report)))))
+
+(ert-deftest le::denote-export--report/counts-not-task-without-listing-it ()
+  "A non-task tree is counted in the summary and named nowhere below it."
+  (le-denote-test--with-org
+      "* 2026-07-26\nprose\n* DOING foo=1 alpha\n"
+    (let ((report (le::denote-export--report
+                   (le-denote-test--trees) "/tmp/task/" "20260727T000000")))
+      (should (string-match-p "0 to file" report))
+      (should (string-match-p "1 skipped: not a task" report))
+      (should (string-match-p "1 skipped: not settled" report))
+      (should (string-match-p "skipped -- not settled:" report))
+      (should-not (string-match-p "2026-07-26" report)))))
 
 
 ;;;; le::denote-export--duplicate-codes
