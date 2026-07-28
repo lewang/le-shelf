@@ -62,73 +62,142 @@
                   '("20260703T134035" "20260703T134036"))
                  "20260703T134037")))
 
-;;; Link rewriting ---------------------------------------------------------
+;;; Rewriting --------------------------------------------------------------
 
-(ert-deftest le::denote-attach--rewrite-text/bare-link ()
-  (should (equal (le::denote-attach--rewrite-text
-                  "see [[attachment:a.png]] here" "a.png" "20260101T000000")
+(defun le::denote-attach-test--rewrite (text basename &optional file new-path)
+  "Rewrite TEXT with fixed conversion context; FILE defaults to an Org file."
+  (le::denote-attach--rewrite
+   text basename
+   (list :id "20260101T000000"
+         :new-path (or new-path "/pg/denote/taskdata/20260101T000000--screenshot.png")
+         :file (or file "/pg/denote/journal/j.org")
+         :playground "/pg/")))
+
+(ert-deftest le::denote-attach--rewrite/bare-attachment-link ()
+  (should (equal (le::denote-attach-test--rewrite "see [[attachment:a.png]] here" "a.png")
                  (cons "see [[denote:20260101T000000]] here" 1))))
 
-(ert-deftest le::denote-attach--rewrite-text/described-link-keeps-description ()
+(ert-deftest le::denote-attach--rewrite/described-link-keeps-description ()
   "The description is the reader's label for the asset, so it survives."
-  (should (equal (le::denote-attach--rewrite-text
-                  "see [[attachment:a.png][the chart]]" "a.png" "20260101T000000")
+  (should (equal (le::denote-attach-test--rewrite
+                  "see [[attachment:a.png][the chart]]" "a.png")
                  (cons "see [[denote:20260101T000000][the chart]]" 1))))
 
-(ert-deftest le::denote-attach--rewrite-text/repeated-occurrences ()
-  (should (equal (le::denote-attach--rewrite-text
-                  "[[attachment:a.png]] and [[attachment:a.png][x]]"
-                  "a.png" "20260101T000000")
+(ert-deftest le::denote-attach--rewrite/repeated-occurrences ()
+  (should (equal (le::denote-attach-test--rewrite
+                  "[[attachment:a.png]] and [[attachment:a.png][x]]" "a.png")
                  (cons "[[denote:20260101T000000]] and [[denote:20260101T000000][x]]" 2))))
 
-(ert-deftest le::denote-attach--rewrite-text/no-match-is-unchanged ()
+(ert-deftest le::denote-attach--rewrite/no-match-is-unchanged ()
   (let ((text "nothing to see"))
-    (should (equal (le::denote-attach--rewrite-text text "a.png" "20260101T000000")
-                   (cons text 0)))))
+    (should (equal (le::denote-attach-test--rewrite text "a.png") (cons text 0)))))
 
-(ert-deftest le::denote-attach--rewrite-text/substring-name-is-not-caught ()
-  "A name that is a SUBSTRING of another's must not be rewritten by it.
-The link delimiters are what make this safe, so assert it rather than assume it."
-  (should (equal (le::denote-attach--rewrite-text
-                  "[[attachment:ba.png]]" "a.png" "20260101T000000")
+(ert-deftest le::denote-attach--rewrite/substring-name-is-not-caught ()
+  "A name that is a SUBSTRING of another's must never be rewritten by it."
+  (should (equal (le::denote-attach-test--rewrite "[[attachment:ba.png]]" "a.png")
                  (cons "[[attachment:ba.png]]" 0)))
-  (should (equal (le::denote-attach--rewrite-text
-                  "[[attachment:a.png.bak]]" "a.png" "20260101T000000")
-                 (cons "[[attachment:a.png.bak]]" 0))))
+  (should (equal (le::denote-attach-test--rewrite "[[attachment:a.png.bak]]" "a.png")
+                 (cons "[[attachment:a.png.bak]]" 0)))
+  (should (equal (le::denote-attach-test--rewrite "prose about ba.png" "a.png")
+                 (cons "prose about ba.png" 0))))
 
-(ert-deftest le::denote-attach--rewrite-text/other-link-types-untouched ()
-  "Only `attachment:' links are rewritten; a `file:' path is left for a human."
-  (should (equal (le::denote-attach--rewrite-text
-                  "[[file:data/xx/yy/a.png]]" "a.png" "20260101T000000")
-                 (cons "[[file:data/xx/yy/a.png]]" 0))))
+(ert-deftest le::denote-attach--rewrite/org-file-link-is-repaired ()
+  "A hand-written `file:' link is the same displacement, so it is the same repair."
+  (should (equal (le::denote-attach-test--rewrite "[[file:data/xx/yy/a.png]]" "a.png")
+                 (cons "[[denote:20260101T000000]]" 1)))
+  (should (equal (le::denote-attach-test--rewrite "[[file:data/yy/a.png][shot]]" "a.png")
+                 (cons "[[denote:20260101T000000][shot]]" 1))))
 
-(ert-deftest le::denote-attach--link-occurrences/reports-line-numbers ()
-  (should (equal (le::denote-attach--link-occurrences
-                  "one\ntwo [[attachment:a.png]]\nthree\n[[attachment:a.png][d]]\n"
+(ert-deftest le::denote-attach--rewrite/prose-gains-a-described-link ()
+  "The visible text is unchanged; only the reference is added."
+  (should (equal (le::denote-attach-test--rewrite "we cropped a.png by hand" "a.png")
+                 (cons "we cropped [[denote:20260101T000000][a.png]] by hand" 1))))
+
+(ert-deftest le::denote-attach--rewrite/prose-in-markdown-uses-md-syntax ()
+  (should (equal (le::denote-attach-test--rewrite
+                  "we cropped a.png by hand" "a.png" "/pg/interviews/i.md")
+                 (cons "we cropped [a.png](denote:20260101T000000) by hand" 1))))
+
+(ert-deftest le::denote-attach--rewrite/bare-name-in-verbatim-is-left-alone ()
+  "A link inside verbatim renders as its own markup, so it is not written."
+  (should (equal (le::denote-attach-test--rewrite "see ~a.png~ there" "a.png")
+                 (cons "see ~a.png~ there" 0)))
+  (should (equal (le::denote-attach-test--rewrite
+                  "see `a.png` there" "a.png" "/pg/interviews/i.md")
+                 (cons "see `a.png` there" 0))))
+
+(ert-deftest le::denote-attach--rewrite/bare-name-in-a-src-block-is-left-alone ()
+  (should (equal (le::denote-attach-test--rewrite
+                  "#+begin_src sh\nmv a.png /tmp\n#+end_src\n" "a.png")
+                 (cons "#+begin_src sh\nmv a.png /tmp\n#+end_src\n" 0))))
+
+;;; Paths -- the whole token is replaced, and verbatim does not matter ------
+
+(ert-deftest le::denote-attach--rewrite/path-in-backticks-in-markdown ()
+  "The motivating case: a path inside inline code in a .md file.
+A path needs no link syntax, so the backticks are irrelevant -- and replacing
+the WHOLE path is what makes it correct rather than stranded."
+  (should (equal (le::denote-attach-test--rewrite
+                  "(see `.le-playground/data/38/AB/a.png`): unreadable"
+                  "a.png" "/pg/interviews/i.md")
+                 (cons "(see `.le-playground/denote/taskdata/20260101T000000--screenshot.png`): unreadable"
+                       1))))
+
+(ert-deftest le::denote-attach--rewrite/path-keeps-an-absolute-style ()
+  (should (equal (le::denote-attach-test--rewrite "at /pg/data/38/AB/a.png now" "a.png")
+                 (cons "at /pg/denote/taskdata/20260101T000000--screenshot.png now" 1))))
+
+(ert-deftest le::denote-attach--rewrite/relative-path-resolves-against-its-file ()
+  "A bare relative path can only mean relative to the file that wrote it."
+  (should (equal (le::denote-attach-test--rewrite "at data/38/AB/a.png now" "a.png")
+                 (cons "at ../taskdata/20260101T000000--screenshot.png now" 1))))
+
+(ert-deftest le::denote-attach--rewrite/markdown-image-target-becomes-a-path ()
+  "An image target must stay a path, or the `!' embed would be destroyed."
+  (should (equal (le::denote-attach-test--rewrite
+                  "![chart](a.png)" "a.png" "/pg/denote/journal/i.md")
+                 (cons "![chart](../taskdata/20260101T000000--screenshot.png)" 1))))
+
+;;; Occurrence classification ---------------------------------------------
+
+(defun le::denote-attach-test--kinds (text basename &optional file)
+  "The kinds of every occurrence of BASENAME in TEXT, in order."
+  (mapcar (lambda (o) (plist-get o :kind))
+          (le::denote-attach--occurrences
+           text basename (or file "/pg/denote/journal/j.org"))))
+
+(ert-deftest le::denote-attach--occurrences/classifies-each-form ()
+  (should (equal (le::denote-attach-test--kinds
+                  "[[attachment:a.png]]\n[[file:d/a.png]]\nprose a.png\nd/a.png\n~a.png~\n"
                   "a.png")
-                 '((2 . "[[attachment:a.png]]") (4 . "[[attachment:a.png][d]]")))))
+                 '(attachment file-link prose path manual))))
 
-;;; Mentions the rewrite cannot repair ------------------------------------
+(ert-deftest le::denote-attach--occurrences/reports-line-numbers ()
+  (should (equal (mapcar (lambda (o) (plist-get o :line))
+                         (le::denote-attach--occurrences
+                          "one\ntwo [[attachment:a.png]]\nthree\nprose a.png\n"
+                          "a.png" "/pg/denote/journal/j.org"))
+                 '(2 4))))
 
-(ert-deftest le::denote-attach--mention-occurrences/prose-only ()
-  (should (equal (le::denote-attach--mention-occurrences
-                  "we discussed a.png at length" "a.png")
-                 '((1 . "we discussed a.png at length")))))
+(ert-deftest le::denote-attach--occurrences/a-link-is-counted-once ()
+  "The file name inside a link is not also a bare mention of it."
+  (should (equal (le::denote-attach-test--kinds "[[attachment:a.png]]" "a.png")
+                 '(attachment))))
 
-(ert-deftest le::denote-attach--mention-occurrences/a-link-is-not-a-mention ()
-  "An `attachment:' link is rewritable, so it is not residue."
-  (should-not (le::denote-attach--mention-occurrences
-               "see [[attachment:a.png]]" "a.png")))
+(ert-deftest le::denote-attach--occurrences/unsupported-type-yields-manual ()
+  (let ((occurrences (le::denote-attach--occurrences
+                      "prose a.png here" "a.png" "/pg/notes.rst")))
+    (should (equal (mapcar (lambda (o) (plist-get o :kind)) occurrences) '(manual)))
+    (should (eq (plist-get (car occurrences) :why) :unsupported))))
 
-(ert-deftest le::denote-attach--mention-occurrences/link-and-prose-on-one-line ()
-  "Blanking the link must leave the prose mention -- and its line number."
-  (should (equal (le::denote-attach--mention-occurrences
-                  "x\n[[attachment:a.png]] but also `data/xx/a.png`\n" "a.png")
-                 '((2 . "but also `data/xx/a.png`")))))
+(ert-deftest le::denote-attach--occurrences/verbatim-yields-manual-with-reason ()
+  (let ((occurrences (le::denote-attach--occurrences
+                      "see ~a.png~" "a.png" "/pg/denote/journal/j.org")))
+    (should (eq (plist-get (car occurrences) :why) :verbatim))))
 
-(ert-deftest le::denote-attach--mention-occurrences/file-link-counts-as-residue ()
-  (should (equal (le::denote-attach--mention-occurrences "[[file:data/x/a.png]]" "a.png")
-                 '((1 . "[[file:data/x/a.png]]")))))
+(ert-deftest le::denote-attach--occurrences/a-path-outranks-verbatim ()
+  "A path in verbatim is still repairable: it needs no link syntax."
+  (should (equal (le::denote-attach-test--kinds "see ~d/a.png~" "a.png") '(path))))
 
 ;;; Paths ------------------------------------------------------------------
 
@@ -164,10 +233,14 @@ The link delimiters are what make this safe, so assert it rather than assume it.
     :fallback "20260728T120000")
   "An asset under the journal's own attachment tree.")
 
+(defun le::denote-attach-test--edits (&rest files)
+  "An edits alist claiming each of FILES carries an attachment link."
+  (mapcar (lambda (file) (cons file (list (list :kind 'attachment :line 1)))) files))
+
 (ert-deftest le::denote-attach--status/working-when-the-citer-sits-in-the-parent ()
   (should (eq (le::denote-attach--status
                le::denote-attach-test--asset
-               '(("/pg/denote/journal/j.org" . ((1 . "x")))))
+               (le::denote-attach-test--edits "/pg/denote/journal/j.org"))
               'working)))
 
 (ert-deftest le::denote-attach--status/broken-when-the-citer-sits-elsewhere ()
@@ -175,18 +248,24 @@ The link delimiters are what make this safe, so assert it rather than assume it.
 from one directory away is already dead -- converting it is a repair."
   (should (eq (le::denote-attach--status
                le::denote-attach-test--asset
-               '(("/pg/interviews/i.md" . ((1 . "x")))))
+               (le::denote-attach-test--edits "/pg/interviews/i.md"))
               'broken)))
 
 (ert-deftest le::denote-attach--status/broken-when-any-citer-is-displaced ()
   (should (eq (le::denote-attach--status
                le::denote-attach-test--asset
-               '(("/pg/denote/journal/j.org" . ((1 . "x")))
-                 ("/pg/interviews/i.md" . ((2 . "y")))))
+               (le::denote-attach-test--edits "/pg/denote/journal/j.org"
+                                              "/pg/interviews/i.md"))
               'broken)))
 
-(ert-deftest le::denote-attach--status/prose-only-without-links ()
+(ert-deftest le::denote-attach--status/prose-only-without-attachment-links ()
+  "Only an `attachment:' link speaks to whether org-attach still resolves; a
+prose or path reference says nothing about it."
   (should (eq (le::denote-attach--status le::denote-attach-test--asset nil)
+              'prose-only))
+  (should (eq (le::denote-attach--status
+               le::denote-attach-test--asset
+               '(("/pg/denote/journal/j.org" . ((:kind path :line 1)))))
               'prose-only)))
 
 ;;; The partition ----------------------------------------------------------
@@ -241,8 +320,8 @@ from one directory away is already dead -- converting it is a repair."
     (should (equal (plist-get (car (plist-get plan :ambiguous)) :basename) "same.png"))
     (should (= 2 (length (plist-get (car (plist-get plan :ambiguous)) :paths))))))
 
-(ert-deftest le::denote-attach--plan/prose-only-asset-is-converted-and-flagged ()
-  "A prose mention keeps an asset alive, but no rewrite can follow it."
+(ert-deftest le::denote-attach--plan/prose-only-asset-is-converted-and-repaired ()
+  "A prose mention keeps an asset alive -- and can now carry a denote link too."
   (let* ((asset (le::denote-attach-test--asset
                  "/pg/denote/journal/data/38/AB/talked-about.png"
                  "/pg/denote/journal/data"))
@@ -252,15 +331,26 @@ from one directory away is already dead -- converting it is a repair."
          (converted (car (plist-get plan :convert))))
     (should converted)
     (should (eq (plist-get converted :status) 'prose-only))
-    (should-not (plist-get converted :links))
+    (should (equal (mapcar (lambda (o) (plist-get o :kind))
+                           (cdr (car (plist-get converted :edits))))
+                   '(prose)))
+    (should-not (le::denote-attach--manual-fixes plan))
+    (should (equal (car (car (plist-get plan :file-edits))) "/pg/interviews/i.md"))))
+
+(ert-deftest le::denote-attach--plan/only-a-bare-name-in-verbatim-needs-a-human ()
+  (let* ((asset (le::denote-attach-test--asset
+                 "/pg/denote/journal/data/38/AB/quoted.png" "/pg/denote/journal/data"))
+         (plan (le::denote-attach-test--plan
+                (list asset)
+                '(("/pg/denote/journal/j.org" . "the file ~quoted.png~ is stale")))))
+    (should (plist-get plan :convert))
     (should-not (plist-get plan :file-edits))
     (should (equal (mapcar (lambda (f) (plist-get f :file))
                            (le::denote-attach--manual-fixes plan))
-                   '("/pg/interviews/i.md")))))
+                   '("/pg/denote/journal/j.org")))))
 
-(ert-deftest le::denote-attach--plan/link-and-file-path-both-reported ()
-  "An asset carrying a rewritable link AND a hand-written path is converted, with
-the path left for a human."
+(ert-deftest le::denote-attach--plan/link-and-hand-written-path-both-repaired ()
+  "Both forms are the same displacement, so both are fixed in one pass."
   (let* ((asset (le::denote-attach-test--asset
                  "/pg/denote/journal/data/38/AB/both.png" "/pg/denote/journal/data"))
          (plan (le::denote-attach-test--plan
@@ -269,11 +359,10 @@ the path left for a human."
                    . "[[attachment:both.png]]\nand [[file:data/38/AB/both.png]]\n"))))
          (converted (car (plist-get plan :convert))))
     (should (eq (plist-get converted :status) 'working))
-    (should (equal (plist-get converted :links)
-                   '(("/pg/denote/journal/j.org" . ((1 . "[[attachment:both.png]]"))))))
-    (should (equal (plist-get converted :mentions)
-                   '(("/pg/denote/journal/j.org"
-                      . ((2 . "and [[file:data/38/AB/both.png]]")))))) ))
+    (should (equal (mapcar (lambda (o) (plist-get o :kind))
+                           (cdr (car (plist-get converted :edits))))
+                   '(attachment file-link)))
+    (should-not (plist-get converted :manual))))
 
 (ert-deftest le::denote-attach--plan/file-edits-group-by-file ()
   "One journal citing two assets yields one entry carrying both substitutions."
@@ -291,9 +380,10 @@ the path left for a human."
          (edits (plist-get plan :file-edits)))
     (should (= 1 (length edits)))
     (should (equal (car (car edits)) "/pg/denote/journal/j.org"))
-    (should (equal (cdr (car edits))
-                   '(("clipboard-20260101T000000.png" . "20260101T000000")
-                     ("clipboard-20260202T000000.png" . "20260202T000000"))))))
+    (should (equal (mapcar (lambda (s) (plist-get s :basename)) (cdr (car edits)))
+                   '("clipboard-20260101T000000.png" "clipboard-20260202T000000.png")))
+    (should (equal (mapcar (lambda (s) (plist-get s :id)) (cdr (car edits)))
+                   '("20260101T000000" "20260202T000000")))))
 
 (ert-deftest le::denote-attach--plan/identifiers-avoid-the-taken-set ()
   (let* ((asset (le::denote-attach-test--asset
