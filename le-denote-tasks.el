@@ -26,8 +26,8 @@
 ;;              the project name stripped so the tag never repeats it (wt2, not
 ;;              goodbearwt2)
 ;;
-;; `le::denote-tasks-tag-file' is FRONT MATTER FIRST: the `#+filetags:' is the
-;; source of truth, the file name a regenerated cache of which only the
+;; `le::denote-tasks-set-frontmatter' is FRONT MATTER FIRST: the `#+filetags:'
+;; is the source of truth, the file name a regenerated cache of which only the
 ;; identifier is guaranteed stable.  So it (1) unions the tags into the note's
 ;; current front-matter keywords and writes them back canonically with
 ;; `le::denote-tasks--rewrite-keywords' -- no rename, standing on its own --
@@ -45,10 +45,11 @@
 ;; cross-silo batch stays correct file by file, not stuck with the caller's
 ;; ambient denote settings.
 ;;
-;; `le::denote-tasks-dired-tag-marked' is that sweep from Dired: it plans the
-;; marked files (`le::denote-tasks--plan' drops those needing nothing), then
-;; either tags them all (prefix arg) or walks them with the usual
-;; `map-y-or-n-p' y/n/!/q prompt -- each accepted file applied atomically.
+;; `le::denote-tasks-dired-set-frontmatter-marked' is that sweep from Dired: it
+;; plans the marked files (`le::denote-tasks--plan' drops those needing
+;; nothing), then either tags them all (prefix arg) or walks them with the
+;; usual `map-y-or-n-p' y/n/!/q prompt -- each accepted file applied
+;; atomically.
 ;;
 ;; `le::denote-tasks-find-journal' reads those same tags the other way round: it
 ;; opens the journal note of a checkout, creating it when there is none.  The
@@ -63,7 +64,8 @@
 ;; WHERE that climb starts is `le::project-root-here' -- the current tab's `w'
 ;; workspace before the buffer, since inside a workspace the workspace is the
 ;; authority for which project is meant.  So `find-journal' is a LOCATOR; the
-;; tag commands are not, acting on files the caller named or marked in dired.
+;; set-frontmatter commands are not, acting on files the caller named or
+;; marked in dired.
 ;;
 ;; The pure core (collapse / tags / added / strip-project / journal title +
 ;; match) is separated from the git + denote shell so the naming rules are
@@ -216,11 +218,11 @@ checkout, so a batch caller can map it over a tree and skip the misses."
               (id (le::denote-tasks--identity checkout)))
     (le::denote-tasks--tags (car id) (cdr id))))
 
-(defun le::denote-tasks--tag-file-1 (file tags no-confirm)
+(defun le::denote-tasks--set-frontmatter-1 (file tags no-confirm)
   "Tag FILE with TAGS then rename it to match; NO-CONFIRM as in the caller.
-The engine of `le::denote-tasks-tag-file' -- see it for the semantics.  Assumes
-the current buffer is FILE's own buffer, so the silo's directory-local settings
-are the ones denote uses; the caller establishes that context."
+The engine of `le::denote-tasks-set-frontmatter' -- see it for the semantics.
+Assumes the current buffer is FILE's own buffer, so the silo's directory-local
+settings are the ones denote uses; the caller establishes that context."
   (let ((file-type (denote-filetype-heuristics file)))
     (unless (eq file-type 'org)
       (user-error "%s is not an Org note (only Org notes are supported)"
@@ -268,7 +270,7 @@ are the ones denote uses; the caller establishes that context."
             file)))))))
 
 ;;;###autoload
-(defun le::denote-tasks-tag-file (file &optional tags no-confirm)
+(defun le::denote-tasks-set-frontmatter (file &optional tags no-confirm)
   "Ensure TAGS are in FILE's front matter, then rename FILE to match.
 FILE is a denote note path.  TAGS is the list of keywords to guarantee
 present; when nil it defaults to `le::denote-tasks-checkout-tags' for FILE (the
@@ -313,7 +315,7 @@ be derived for it."
          (buffer (or existing (find-file-noselect file))))
     (unwind-protect
         (with-current-buffer buffer
-          (le::denote-tasks--tag-file-1 file tags no-confirm))
+          (le::denote-tasks--set-frontmatter-1 file tags no-confirm))
       ;; Only clean up a buffer we opened.  When NO-CONFIRM (unattended), save it
       ;; -- `set-visited-file-name' during the rename marks it modified even
       ;; though its content already matches disk -- then kill it, so a batch
@@ -346,13 +348,13 @@ already matches (i.e. there is nothing to do)."
               (list :file file :tags tags :added added))))))))
 
 ;;;###autoload
-(defun le::denote-tasks-dired-tag-marked (&optional no-confirm)
+(defun le::denote-tasks-dired-set-frontmatter-marked (&optional no-confirm)
   "Tag the marked Dired files with each one's checkout project/worktree filetags.
 Operate on the marked files (or the file at point when none are marked).  For
 each that is an Org denote note under a git `.le-playground' checkout and
-actually needs a change, apply `le::denote-tasks-tag-file' (set the front
-matter, then rename to match); files that need nothing, are not Org notes, or
-lie outside such a checkout are skipped without a prompt.
+actually needs a change, apply `le::denote-tasks-set-frontmatter' (set the
+front matter, then rename to match); files that need nothing, are not Org
+notes, or lie outside such a checkout are skipped without a prompt.
 
 Without a prefix arg, confirm each file with the usual y/n/!/q prompt -- `y'
 tags it, `n' skips it, `!' tags all remaining, `q' stops.  With a prefix arg
@@ -368,7 +370,7 @@ the front-matter and rename sub-prompts are suppressed."
     (if (null plans)
         (message "No marked files need project/worktree tagging")
       (let ((act (lambda (p)
-                   (le::denote-tasks-tag-file (plist-get p :file) (plist-get p :tags) t)
+                   (le::denote-tasks-set-frontmatter (plist-get p :file) (plist-get p :tags) t)
                    (setq done (1+ done)))))
         (if no-confirm
             (mapc act plans)
