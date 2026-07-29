@@ -349,7 +349,7 @@ already matches (i.e. there is nothing to do)."
 
 ;;;###autoload
 (defun le::denote-tasks-dired-set-frontmatter-marked (&optional no-confirm)
-  "Tag the marked Dired files with each one's checkout project/worktree filetags.
+  "Set each marked Dired file's front matter to its checkout tags, then rename it.
 Operate on the marked files (or the file at point when none are marked).  For
 each that is an Org denote note under a git `.le-playground' checkout and
 actually needs a change, apply `le::denote-tasks-set-frontmatter' (set the
