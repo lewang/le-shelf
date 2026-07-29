@@ -156,7 +156,11 @@ computed `code=path' id, LEVEL the star count, STATE the birth keyword
 ANCHOR is located by its code token so the edit is content-addressed, not
 line-addressed; the new heading is placed at the end of ANCHOR's subtree, which
 serves both a new sibling (top-level member, ANCHOR = the group's last member)
-and a new child (ANCHOR = the parent).  A birth LOGBOOK note is seeded newest-in
+and a new child (ANCHOR = the parent).  A nil or empty ANCHOR instead appends the
+new heading at end of file -- the fallback `dnc' takes for a top-level follow-on
+whose code-group is fully promoted, leaving no journal member to anchor against
+(the journal itself is resolved by `le::denote-tasks-resolve-journal').  A birth
+LOGBOOK note is seeded newest-in
 via `org-log-beginning' (empty \"from\", 🤖-tagged, time-stamped here), and BODY,
 when present, follows the drawer.
 
@@ -166,13 +170,16 @@ any, is never touched."
   (with-temp-buffer
     (insert-file-contents file)
     (delay-mode-hooks (org-mode))
-    (goto-char (point-min))
-    (unless (re-search-forward
-             (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote anchor) "\\(?:[ \t]\\|$\\)")
-             nil t)
-      (error "No task heading for anchor %s in %s" anchor file))
-    (org-back-to-heading t)
-    (org-end-of-subtree t t)
+    (if (and anchor (not (string-empty-p anchor)))
+        (progn
+          (goto-char (point-min))
+          (unless (re-search-forward
+                   (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote anchor) "\\(?:[ \t]\\|$\\)")
+                   nil t)
+            (error "No task heading for anchor %s in %s" anchor file))
+          (org-back-to-heading t)
+          (org-end-of-subtree t t))
+      (goto-char (point-max)))
     (let* ((org-log-into-drawer "LOGBOOK")
            (ts (format-time-string "[%Y-%m-%d %a %H:%M]"))
            (heading (concat (make-string level ?*) " " state " " newcode " "

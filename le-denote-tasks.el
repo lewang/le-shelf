@@ -418,6 +418,30 @@ front matter from FILES -- would find no journal and mint a second one."
         (denote-save-buffers t))
     (denote title tags 'org dir)))
 
+(defun le::denote-tasks-resolve-journal (origin)
+  "Return the journal note path for ORIGIN's checkout, creating it if missing.
+The resolving half of `le::denote-tasks-find-journal' -- the whole of it but the
+final `find-file' -- so a non-interactive caller like `dnc' can borrow the same
+per-checkout identity rule by passing the silo it is operating on as ORIGIN.  See
+`le::denote-tasks-find-journal' for the identity and the `user-error's on a
+missing or untaggable checkout and on a duplicate journal."
+  (let* ((checkout
+          (or (le::denote-tasks--checkout origin)
+              (user-error "No `.le-playground' above %s (run /playground-setup)"
+                          (abbreviate-file-name origin))))
+         (tags (or (le::denote-tasks-checkout-tags origin)
+                   (user-error "No project/worktree tags for %s (a git checkout?)"
+                               (abbreviate-file-name checkout))))
+         (title (le::denote-tasks--journal-title checkout))
+         (dir (le::denote-tasks--journal-dir checkout))
+         (matches (le::denote-tasks--journal-matches dir title tags)))
+    (when (cdr matches)
+      (user-error "%d notes claim to be \"%s\" -- fix their front matter: %s"
+                  (length matches) title
+                  (mapconcat #'file-name-nondirectory matches ", ")))
+    (or (car matches)
+        (le::denote-tasks--journal-create dir title tags))))
+
 ;;;###autoload
 (defun le::denote-tasks-find-journal ()
   "Open the journal note of the project this Emacs is working in.
@@ -448,23 +472,9 @@ duplicate means a mis-tagged note, and silently picking one would hide it."
   (interactive)
   ;; Buffer tail: the helper is nil with neither workspace nor project, and a
   ;; `.le-playground' can sit outside a VC repo.
-  (let* ((origin (or (le::project-root-here) buffer-file-name default-directory))
-         (checkout
-          (or (le::denote-tasks--checkout origin)
-              (user-error "No `.le-playground' above %s (run /playground-setup)"
-                          (abbreviate-file-name origin))))
-         (tags (or (le::denote-tasks-checkout-tags origin)
-                   (user-error "No project/worktree tags for %s (a git checkout?)"
-                               (abbreviate-file-name checkout))))
-         (title (le::denote-tasks--journal-title checkout))
-         (dir (le::denote-tasks--journal-dir checkout))
-         (matches (le::denote-tasks--journal-matches dir title tags)))
-    (when (cdr matches)
-      (user-error "%d notes claim to be \"%s\" -- fix their front matter: %s"
-                  (length matches) title
-                  (mapconcat #'file-name-nondirectory matches ", ")))
-    (find-file (or (car matches)
-                   (le::denote-tasks--journal-create dir title tags)))))
+  (find-file
+   (le::denote-tasks-resolve-journal
+    (or (le::project-root-here) buffer-file-name default-directory))))
 
 (provide 'le-denote-tasks)
 ;;; le-denote-tasks.el ends here
