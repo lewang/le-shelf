@@ -21,11 +21,17 @@
 ;; The buffer-flip entrance in the same "project" spirit -- cycling only the
 ;; current `w' workspace's buffers -- lives in le-project-flip.el
 ;; (`le::project-flip'), which pulls in buffer-flip.
+;;
+;; `le::project-root-here' answers a different question -- not "what is this
+;; file's project?" but "which project does the user MEAN?" -- asking the `w'
+;; workspace before the buffer.  Commands using ambient location as a LOCATOR
+;; want it; ones acting ON the current buffer or file do not.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'project)
+(require 'w)
 
 (cl-defmethod project-root ((project (head le-playground)))
   "Parent repo root of the le-playground PROJECT.
@@ -71,6 +77,21 @@ with MAYBE-PROMPT.  Shared by `le::project-find-file' and le-consult.el's
 climbing sources; each supplies its own glue around the result."
   (or (le::project-try-playground-super (or dir default-directory))
       (project-current maybe-prompt dir)))
+
+(defun le::project-root-here (&optional maybe-prompt dir)
+  "The authoritative project root for the current context, or nil.
+The current tab's `w' workspace wins when there is one: it names the project
+being worked in, which the buffer may not -- a `*scratch*', an eshell that has
+cd'd away, or a directory deleted underneath a live buffer all answer wrongly.
+Otherwise fall back to `le::project-current', which unlike native
+`project-current' spans a `.le-playground' worktree with its parent repo,
+resolving from DIR and prompting per MAYBE-PROMPT.
+
+Normalized, because `project-root' may answer with a `~'-abbreviated path."
+  (when-let* ((root (or (plist-get (w-current) :project-root)
+                        (when-let* ((pr (le::project-current maybe-prompt dir)))
+                          (project-root pr)))))
+    (file-name-as-directory (expand-file-name root))))
 
 ;;;###autoload
 (defun le::project-find-file (&optional include-all)

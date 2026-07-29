@@ -51,14 +51,19 @@
 ;; `map-y-or-n-p' y/n/!/q prompt -- each accepted file applied atomically.
 ;;
 ;; `le::denote-tasks-find-journal' reads those same tags the other way round: it
-;; opens the journal note of the checkout the current buffer lives under,
-;; creating it when there is none.  The wanted note is the one whose title is
-;; `journal <checkout root basename>' and whose keywords cover the checkout's
-;; tags -- per CHECKOUT, so a linked worktree keeps its own journal.  It walks up
-;; to the checkout rather than consulting `denote-directory', because it is meant
-;; to fire from a source buffer where the silo's `.dir-locals.el' never applies,
-;; and it judges candidates on their front matter, not their names.  Two matches
-;; is a mis-tagged note, so it refuses rather than picking one.
+;; opens the journal note of a checkout, creating it when there is none.  The
+;; wanted note is the one whose title is `journal <checkout root basename>' and
+;; whose keywords cover the checkout's tags -- per CHECKOUT, so a linked worktree
+;; keeps its own journal.  It resolves the checkout by climbing to the nearest
+;; `.le-playground' rather than consulting `denote-directory', because it is
+;; meant to fire from a source buffer where the silo's `.dir-locals.el' never
+;; applies, and it judges candidates on their front matter, not their names.
+;; Two matches is a mis-tagged note, so it refuses rather than picking one.
+;;
+;; WHERE that climb starts is `le::project-root-here' -- the current tab's `w'
+;; workspace before the buffer, since inside a workspace the workspace is the
+;; authority for which project is meant.  So `find-journal' is a LOCATOR; the
+;; tag commands are not, acting on files the caller named or marked in dired.
 ;;
 ;; The pure core (collapse / tags / added / strip-project / journal title +
 ;; match) is separated from the git + denote shell so the naming rules are
@@ -68,6 +73,7 @@
 
 (require 'denote)
 (require 'seq)
+(require 'le-project)
 
 (declare-function dired-get-marked-files "dired")
 
@@ -414,27 +420,35 @@ front matter from FILES -- would find no journal and mint a second one."
 
 ;;;###autoload
 (defun le::denote-tasks-find-journal ()
-  "Open the journal note of the checkout the current buffer lives under.
-Create it first when the checkout has none, then open it either way.
+  "Open the journal note of the project this Emacs is working in.
+Create it first when that project has none, then open it either way.
 
-Identity is per CHECKOUT, not per project: a linked worktree keeps its own
+WHICH project comes from `le::project-root-here', so the answer follows the TAB
+rather than the point: with the tab on one project and a file from another
+visited in it, this journals to the TAB's project.
+
+Identity is per CHECKOUT, not per project name: a linked worktree keeps its own
 journal.  So the note wanted here is the one whose title is `journal ' plus the
 basename of the checkout root and whose keywords cover
-`le::denote-tasks-checkout-tags' for this buffer (`project<name>' in a main
-checkout, plus `worktree<label>' in a linked one).
+`le::denote-tasks-checkout-tags' (`project<name>' in a main checkout, plus
+`worktree<label>' in a linked one).
 
-The checkout is found by walking up from the buffer with
+From that origin the checkout is found by climbing with
 `le::denote-tasks--checkout' rather than by consulting `denote-directory': this
 is meant to fire from a source buffer, where the silo's `.dir-locals.el' -- and
-so its `denote-directory' -- never applies.  Candidates in the silo's
-`journal/' are then judged on their front matter, not their file names.
+so its `denote-directory' -- never applies.  The climb stays even with a project
+root for an origin, being what establishes the project HAS a playground.
+Candidates in the silo's `journal/' are then judged on their front matter, not
+their file names.
 
-Signal a `user-error' when there is no `.le-playground' above the buffer
+Signal a `user-error' when there is no `.le-playground' above the origin
 \(creating the silo is a git-worktree operation -- see /playground-setup), when
 no project tags can be derived for it, or when two or more notes match: a
 duplicate means a mis-tagged note, and silently picking one would hide it."
   (interactive)
-  (let* ((origin (or buffer-file-name default-directory))
+  ;; Buffer tail: the helper is nil with neither workspace nor project, and a
+  ;; `.le-playground' can sit outside a VC repo.
+  (let* ((origin (or (le::project-root-here) buffer-file-name default-directory))
          (checkout
           (or (le::denote-tasks--checkout origin)
               (user-error "No `.le-playground' above %s (run /playground-setup)"
