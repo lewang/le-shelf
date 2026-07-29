@@ -424,8 +424,8 @@ front matter from FILES -- would find no journal and mint a second one."
   "Return the journal note path for ORIGIN's checkout, creating it if missing.
 The resolving half of `le::denote-tasks-find-journal' -- the whole of it but the
 final `find-file' -- so a non-interactive caller like `dnc' can borrow the same
-per-checkout identity rule by passing the silo it is operating on as ORIGIN.  See
-`le::denote-tasks-find-journal' for the identity and the `user-error's on a
+per-checkout identity rule by passing the silo it is operating on as ORIGIN.
+See `le::denote-tasks-find-journal' for the identity and the `user-error's on a
 missing or untaggable checkout and on a duplicate journal."
   (let* ((checkout
           (or (le::denote-tasks--checkout origin)
