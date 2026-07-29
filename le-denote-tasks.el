@@ -414,10 +414,14 @@ silo.
 
 `denote-save-buffers' is forced on: by default `denote' leaves the new note in
 an unsaved buffer, so nothing reaches disk and the next lookup -- which reads
-front matter from FILES -- would find no journal and mint a second one."
+front matter from FILES -- would find no journal and mint a second one.
+`denote-kill-buffers' is forced on too, so `denote' does not leave the new note
+visiting in a popped-up buffer: a non-interactive caller (`dnc') must leave no
+buffer behind, and the interactive `find-journal' re-opens the path itself."
   (make-directory dir t)
   (let ((denote-directory (file-name-directory (directory-file-name dir)))
-        (denote-save-buffers t))
+        (denote-save-buffers t)
+        (denote-kill-buffers t))
     (denote title tags 'org dir)))
 
 (defun le::denote-tasks-resolve-journal (origin)
