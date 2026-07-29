@@ -120,8 +120,16 @@ only COVER WANT-TAGS, so a journal the user has tagged further still matches."
 ;;; Imperative shell -------------------------------------------------------
 
 (defun le::denote-tasks--git-lines (checkout &rest args)
-  "Run git ARGS in CHECKOUT; return output lines, or nil on failure."
-  (ignore-errors (apply #'process-lines "git" "-C" checkout args)))
+  "Run git ARGS in CHECKOUT; return output lines, or nil on failure.
+`default-directory' is bound to CHECKOUT, not left as the caller's: it is what
+`process-lines' launches the subprocess in, while `-C' only tells git where to
+look once it is running.  So the caller's own directory would otherwise decide
+whether git starts at all -- a buffer whose directory has since been deleted
+cannot host a subprocess, and a remote one would run git on the wrong host with
+a local path.  CHECKOUT comes from `le::denote-tasks--checkout', so it exists
+and sits on the same host as the file being asked about."
+  (let ((default-directory checkout))
+    (ignore-errors (apply #'process-lines "git" "-C" checkout args))))
 
 (defun le::denote-tasks--checkout (file)
   "The git checkout holding the `.le-playground' that contains FILE, or nil.

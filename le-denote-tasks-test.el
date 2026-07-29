@@ -4,9 +4,14 @@
 
 ;; ERT tests for the functional core of `le::denote-tasks-find-journal': the
 ;; title a checkout's journal carries, and the front-matter predicate that
-;; decides whether a candidate note is that journal.  Nothing here touches a
-;; denote silo, a git checkout or the filesystem -- both functions are pure.
-;; Run in batch:
+;; decides whether a candidate note is that journal.  Both are pure, so those
+;; tests touch no denote silo, git checkout or filesystem.
+;;
+;; The one exception is at the end: `le::denote-tasks-checkout-tags' shells out
+;; to git, and its regression -- a subprocess launched in the CALLER's
+;; `default-directory' rather than in the checkout -- is unreachable through a
+;; pure function.  Those two build a throwaway git checkout in a temp
+;; directory.  Run in batch:
 ;;
 ;;   emacs -Q -batch -L "$PWD" -L <elpaca-builds>/denote \
 ;;     -l "$PWD/le-denote-tasks.el" -l "$PWD/le-denote-tasks-test.el" \
@@ -89,6 +94,50 @@
   (should-not (le::denote-tasks--journal-match-p
                nil '("projectleshelf")
                "journal le-shelf" '("projectleshelf"))))
+
+;;; Git identity, from a hostile default-directory -------------------------
+
+(defmacro le::denote-tasks-test--with-checkout (var &rest body)
+  "Bind VAR to a throwaway git checkout holding a `.le-playground', run BODY.
+The checkout is deleted afterwards even when BODY fails."
+  (declare (indent 1) (debug (symbolp body)))
+  `(let ((,var (file-name-as-directory
+                (make-temp-file "le-denote-tasks-test" t))))
+     (unwind-protect
+         (progn
+           (make-directory (expand-file-name ".le-playground" ,var))
+           (let ((default-directory ,var))
+             (ignore (process-lines "git" "init")))
+           ,@body)
+       (delete-directory ,var t))))
+
+(defun le::denote-tasks-test--project-tag (checkout)
+  "The lone `project<name>' tag a main CHECKOUT should yield."
+  (list (concat "project"
+                (le::denote-tasks--collapse
+                 (file-name-nondirectory (directory-file-name checkout))))))
+
+(ert-deftest le::denote-tasks-checkout-tags/reads-a-live-default-directory ()
+  "The control for the test below: an ordinary cwd inside the checkout."
+  (le::denote-tasks-test--with-checkout root
+    (let ((default-directory root))
+      (should (equal (le::denote-tasks-checkout-tags
+                      (expand-file-name ".le-playground/denote/journal/" root))
+                     (le::denote-tasks-test--project-tag root))))))
+
+(ert-deftest le::denote-tasks-checkout-tags/survives-a-deleted-default-directory ()
+  "Tags must still resolve when the CALLER's own directory is gone.
+`process-lines' launches git in `default-directory', while `-C' only steers git
+once it runs, so leaving the former unbound let a dead cwd fail the launch
+outright -- which `ignore-errors' then reported as though the checkout were not
+a git repository at all.  A dired buffer whose directory was deleted underneath
+it is the everyday way to reach this."
+  (le::denote-tasks-test--with-checkout root
+    (let ((default-directory (expand-file-name "gone/" root)))
+      (should-not (file-directory-p default-directory))
+      (should (equal (le::denote-tasks-checkout-tags
+                      (expand-file-name ".le-playground/denote/journal/" root))
+                     (le::denote-tasks-test--project-tag root))))))
 
 (provide 'le-denote-tasks-test)
 ;;; le-denote-tasks-test.el ends here
