@@ -115,8 +115,7 @@ Two layout strategies:
   buffers non-destructively, preserving window history
   (winner-mode, etc.).
 - Incompatible: delete all other windows and rebuild from scratch."
-  (interactive (list (or (plist-get (w-current) :project-root)
-                         (expand-file-name (project-root (project-current))))))
+  (interactive (list (le::project-root-here t)))
   (let* ((project-buf (or (cl-find-if (lambda (buf)
                                         (and (not (with-current-buffer buf
                                                     (derived-mode-p 'magit-status-mode)))

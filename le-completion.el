@@ -15,19 +15,23 @@
 
 ;;; Code:
 
-(require 'project)
+(require 'le-project)                    ; le::project-root-here
 
 ;;;###autoload
 (defun le::cape-dabbrev-buffers ()
   "Return buffers for cape-dabbrev: same project root or same major mode.
 Searches frame-local buffer list.  Falls back to current buffer.
 
+The root comes from `le::project-root-here', so it follows the tab's `w'
+workspace and is normalized -- `project-root' answers `~'-abbreviated while
+`default-directory' is expanded, which made the prefix test below fail for
+every buffer.
+
 The root test is plain path CONTAINMENT, so a nested child project's buffers
 count as nearby -- deliberate here, where the question is which buffers hold
 words worth completing, not which project owns them."
   (let ((mode major-mode)
-        (root (when-let* ((proj (project-current)))
-                (project-root proj)))
+        (root (le::project-root-here))
         result)
     (dolist (buf (buffer-list (selected-frame)))
       (when (or (and root

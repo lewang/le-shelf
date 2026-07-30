@@ -10,9 +10,14 @@
 ;;
 ;; The fix lives at the SOURCE level, not the command level: rebuild
 ;; climbing copies of consult's project buffer/file sources, each running its
-;; `:items'/`:new' with `consult-project-function' dynamically bound to a
-;; resolver that climbs to the merged super-project, and splice them into the
-;; source lists.  Then both commands inherit the union.
+;; `:items'/`:new' with `consult-project-function' dynamically bound to
+;; `le::project-root-here', and splice them into the source lists.  Then both
+;; commands inherit the union.
+;;
+;; Because that resolver asks the tab's `w' workspace first, these sources
+;; follow the TAB rather than the current buffer -- so from a buffer in another
+;; project they list the workspace's project, as every other tab-scoped command
+;; already does.
 ;;
 ;; The global `consult-project-function' is left NATIVE on purpose.  Its only
 ;; reach beyond these listing sources is consult-grep/ripgrep/find's default
@@ -52,13 +57,6 @@
 (defvar le::consult-source-project-recent-file-hidden nil
   "Climbing copy of `consult-source-project-recent-file-hidden'.")
 
-(defun le::consult--project-root (&optional maybe-prompt)
-  "Resolve the merged super-project root, `consult-project-function'-shaped.
-Climb to a repo and its `.le-playground' worktree via `le::project-current'
-and return the parent root, or nil when there is no project."
-  (when-let* ((pr (le::project-current maybe-prompt)))
-    (project-root pr)))
-
 (defun le::consult--prune-buffers (items-fn)
   "Wrap a buffer source's ITEMS-FN to drop nested child-project buffers.
 Each consult buffer candidate is a (NAME . BUFFER) pair (see
@@ -71,7 +69,7 @@ root, or for a candidate that is not a live buffer, the entry passes
 through."
   (lambda (&rest args)
     (let ((result (apply items-fn args))
-          (root (le::consult--project-root)))
+          (root (le::project-root-here)))
       (if (not root)
           result
         (seq-filter
@@ -94,10 +92,16 @@ With no super-project, or an empty file set, the items pass through unchanged.
 
 Order is preserved (`seq-filter'), so consult's recentf MRU ordering and its
 native exclusion of already-open files (via `consult--buffer-file-hash') both
-survive -- this only removes the child's entries."
+survive -- this only removes the child's entries.
+
+The project is resolved FROM `le::project-root-here', the same root the items
+were listed against, rather than from `default-directory' -- otherwise a tab
+whose workspace names a different project than the current buffer would filter
+its own listing away entirely."
   (lambda (&rest args)
     (let ((result (apply items-fn args))
-          (pr (le::project-current)))
+          (pr (when-let* ((root (le::project-root-here)))
+                (le::project-current nil root))))
       (if (not pr)
           result
         (let ((members (make-hash-table :test #'equal)))
@@ -115,7 +119,7 @@ survive -- this only removes the child's entries."
 (defun le::consult--climb-source (source)
   "Return a copy of consult SOURCE whose `:items'/`:new' climb the super-project.
 Wrap the source's `:items' (and `:new', when present) so each runs with
-`consult-project-function' dynamically bound to `le::consult--project-root';
+`consult-project-function' dynamically bound to `le::project-root-here';
 every other property is inherited unchanged.  The global
 `consult-project-function' is untouched, so grep/ripgrep/find keep the native
 per-repo root.
@@ -132,7 +136,7 @@ adopted `.le-playground' entries pass."
         (filep (eq (plist-get source :category) 'file)))
     (cl-flet ((climb (fn)
                 (lambda (&rest args)
-                  (let ((consult-project-function #'le::consult--project-root))
+                  (let ((consult-project-function #'le::project-root-here))
                     (apply fn args)))))
       ;; Prepended `:items'/`:new' win over the spliced originals (plist-get
       ;; returns the first match); every other property comes from SOURCE.
