@@ -120,8 +120,8 @@ Return a `le-playground' project unioning both, or nil elsewhere (defer to
                    (match-string 1 dir)                   ; inside the worktree
                  (when-let* ((proj (project-try-vc dir))) ; inside the parent repo
                    (directory-file-name (project-root proj)))))
-              (play-dir (expand-file-name ".le-playground" parent))
-              ((file-exists-p (expand-file-name ".git" play-dir)))
+              (play-dir (le::project-playground-dir parent))
+              ((le::project-playground-p play-dir))
               (parent-proj (project-try-vc parent))
               (play-proj (project-try-vc play-dir))
               ;; Confirm .le-playground is really its own repo (its root is

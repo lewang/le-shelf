@@ -20,7 +20,11 @@
 ;;;###autoload
 (defun le::cape-dabbrev-buffers ()
   "Return buffers for cape-dabbrev: same project root or same major mode.
-Searches frame-local buffer list.  Falls back to current buffer."
+Searches frame-local buffer list.  Falls back to current buffer.
+
+The root test is plain path CONTAINMENT, so a nested child project's buffers
+count as nearby -- deliberate here, where the question is which buffers hold
+words worth completing, not which project owns them."
   (let ((mode major-mode)
         (root (when-let* ((proj (project-current)))
                 (project-root proj)))
