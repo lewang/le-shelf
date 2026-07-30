@@ -15,12 +15,23 @@
 ;; `le-cci-prompt2-history' merges into M-p/M-n, expanding the
 ;; "[Pasted text #N]" placeholders its display strings carry.
 ;;
+;; Recalling a prompt with C-p and re-sending it stores the placeholder
+;; without its payload, so an entry's own pastedContents cannot always
+;; answer.  Three sources are tried in turn: the entry's inline payload,
+;; Claude's content-addressed paste cache, then the same paste id's
+;; earlier submission in the same session.  What none of them answers is
+;; marked rather than dropped -- a prompt that never reached Claude is
+;; still history worth recalling, and a marker fails visibly on re-send
+;; where a bare placeholder reads as a legitimate prompt.
+;;
 ;; Separate from `le-cci-prompt2-history' because the parsing here needs
-;; nothing but subr-x and the built-in JSON reader, while the navigation
-;; side pulls in org, denote and w -- so this half is testable in batch.
+;; nothing but cl-lib, subr-x and the built-in JSON reader, while the
+;; navigation side pulls in org, denote and w -- so this half is
+;; testable in batch.
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 
 (defvar le::cci-prompt2--claude-history-file "~/.claude/history.jsonl"
@@ -143,22 +154,115 @@ identifies nothing."
            pasted))))
     index))
 
+;;;; Claude's paste cache
+
+(defvar le::cci-prompt2--paste-cache-dir "~/.claude/paste-cache/"
+  "Claude Code's content-addressed store for elided paste payloads.
+A pastedContents entry that carries a `contentHash' instead of its
+`content' has its payload in <hash>.txt here.  Retention is unknown
+and nothing depends on it: a miss falls through to the next source.")
+
+(defun le::cci-prompt2--paste-hash (obj)
+  "Return OBJ's contentHash, or nil.
+OBJ is one pastedContents value; only the elided shape carries one.
+Non-hex is refused -- the value names a file, so it must not be able
+to reach out of `le::cci-prompt2--paste-cache-dir'."
+  (and (hash-table-p obj)
+       (let ((hash (gethash "contentHash" obj)))
+         (and (stringp hash)
+              (string-match-p "\\`[0-9a-f]+\\'" hash)
+              hash))))
+
+(defun le::cci-prompt2--paste-cache-content (hash)
+  "Return the payload HASH names in Claude's paste cache, or nil.
+nil when the file is absent or unreadable -- an evicted cache entry is
+ordinary, not an error."
+  (let ((file (expand-file-name (concat hash ".txt")
+                                le::cci-prompt2--paste-cache-dir)))
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (buffer-string)))))
+
+;;;; Borrowing from an earlier submission
+
+(defun le::cci-prompt2--paste-line-count (content)
+  "Return CONTENT's line count the way a \"+K lines\" suffix counts.
+Measured against every inline payload in the history: all 434 agree
+that a \"+K lines\" placeholder stands for K+1 of these."
+  (1+ (cl-count ?\n content)))
+
+(defun le::cci-prompt2--paste-sibling (index session id ts expected-lines)
+  "Return a payload borrowed from an earlier submission, or nil.
+Searches INDEX for a payload recorded under paste id ID in session
+SESSION, strictly before TS and EXPECTED-LINES lines long, and returns
+the most recent of those.
+
+Earlier is the only direction that can hold one: recalling a prompt is
+what loses its paste map, so the payload was recorded when that prompt
+was first sent.  The length test and the recency each rule out a wrong
+answer the other would admit -- ids are reused within a long session,
+and two payloads of equal length can sit under one id."
+  (let (best)
+    (dolist (candidate (gethash (concat session "\0" id) index))
+      (when (and (< (car candidate) ts)
+                 (= (le::cci-prompt2--paste-line-count (cdr candidate))
+                    expected-lines)
+                 (or (null best) (> (car candidate) (car best))))
+        (setq best candidate)))
+    (cdr best)))
+
+(defun le::cci-prompt2--paste-marker (id expected-lines)
+  "Return the text standing in for unrecoverable paste ID.
+EXPECTED-LINES is the length its placeholder claimed.  Deliberately
+not prose: the entry is kept, because a prompt that never reached
+Claude is still history, but re-sending it must fail visibly instead
+of reading as a legitimate prompt."
+  (format "[paste #%s unrecoverable: %d line%s]"
+          id expected-lines (if (= expected-lines 1) "" "s")))
+
+(defun le::cci-prompt2--paste-lookup (record index)
+  "Return a LOOKUP for `le::cci-prompt2--expand-pastes' over RECORD.
+Tries Claude's paste cache when RECORD's own pastedContents elided the
+payload to a `contentHash', then an earlier submission of the same
+paste id in the same session (`le::cci-prompt2--paste-sibling' over
+INDEX).  Falls back to `le::cci-prompt2--paste-marker', so the
+returned function never declines: every placeholder ends up either
+expanded or explicitly marked, none left bare."
+  (let ((pasted (plist-get record :pasted))
+        (session (plist-get record :session))
+        (ts (plist-get record :ts)))
+    (lambda (id expected-lines)
+      (or (when-let* ((hash (le::cci-prompt2--paste-hash
+                             (and (hash-table-p pasted) (gethash id pasted)))))
+            (le::cci-prompt2--paste-cache-content hash))
+          (and (stringp session)
+               (le::cci-prompt2--paste-sibling index session id ts
+                                               expected-lines))
+          (le::cci-prompt2--paste-marker id expected-lines)))))
+
 ;;;; The merged entry list
 
 (defun le::cci-prompt2--claude-history-entries (root)
   "Collect project ROOT's prompts from Claude Code's own history.
 Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS), newest
-first, TS in float epoch seconds.  TEXT carries its paste
-placeholders expanded as far as the history's own records allow; an
-entry whose text is empty is dropped."
-  (let ((records (le::cci-prompt2--claude-history-records root))
-        entries)
+first, TS in float epoch seconds.  TEXT carries its paste placeholders
+expanded from the three sources `le::cci-prompt2--paste-lookup'
+describes, or marked unrecoverable; an entry whose text is empty is
+dropped.
+
+A borrowed payload can only come from the same session, and a session
+belongs to one project, so `le::cci-prompt2--claude-history-records'
+prefiltering on ROOT never hides a candidate."
+  (let* ((records (le::cci-prompt2--claude-history-records root))
+         (index (le::cci-prompt2--paste-index records))
+         entries)
     (dolist (record records)
       (let ((text (string-trim
                    (le::cci-prompt2--expand-pastes
                     (plist-get record :display)
                     (plist-get record :pasted)
-                    nil))))
+                    (le::cci-prompt2--paste-lookup record index)))))
         (unless (string-empty-p text)
           (push (list :id nil :state "CLI" :text text
                       :ts (plist-get record :ts))

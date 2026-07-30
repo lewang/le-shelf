@@ -171,5 +171,144 @@ the digit as part of an octal escape."
     (should (equal (le::cci-prompt2-paste-test--payloads index "s1" "1") '("one")))
     (should (equal (le::cci-prompt2-paste-test--payloads index "s1" "2") '("two")))))
 
+
+;;;; Borrowing from an earlier submission
+
+(ert-deftest le::cci-prompt2-paste-test-sibling-needs-the-line-count ()
+  "A candidate of the wrong length is refused even with nothing else on offer."
+  (let ((index (le::cci-prompt2--paste-index
+                (list (le::cci-prompt2-paste-test--record
+                       "s1" 100.0
+                       (le::cci-prompt2-paste-test--pasted
+                        '("1" :content "a\nb\nc")))))))
+    (should (equal (le::cci-prompt2--paste-sibling index "s1" "1" 200.0 3)
+                   "a\nb\nc"))
+    (should-not (le::cci-prompt2--paste-sibling index "s1" "1" 200.0 4))
+    (should-not (le::cci-prompt2--paste-sibling index "s1" "1" 200.0 2))))
+
+(ert-deftest le::cci-prompt2-paste-test-sibling-prefers-recency ()
+  "Two candidates of the right length: the later one wins."
+  (let ((index (le::cci-prompt2--paste-index
+                (list (le::cci-prompt2-paste-test--record
+                       "s1" 100.0
+                       (le::cci-prompt2-paste-test--pasted '("1" :content "old\nold")))
+                      (le::cci-prompt2-paste-test--record
+                       "s1" 200.0
+                       (le::cci-prompt2-paste-test--pasted '("1" :content "new\nnew")))))))
+    (should (equal (le::cci-prompt2--paste-sibling index "s1" "1" 300.0 2)
+                   "new\nnew"))
+    ;; ...unless recency puts it out of reach: at 150 only the old one is earlier
+    (should (equal (le::cci-prompt2--paste-sibling index "s1" "1" 150.0 2)
+                   "old\nold"))))
+
+(ert-deftest le::cci-prompt2-paste-test-sibling-must-be-earlier ()
+  "A payload recorded at or after the entry is never borrowed.
+Recalling a prompt is what loses its paste map, so the payload always
+predates the entry that lost it -- a later one is a different paste."
+  (let ((index (le::cci-prompt2--paste-index
+                (list (le::cci-prompt2-paste-test--record
+                       "s1" 200.0
+                       (le::cci-prompt2-paste-test--pasted '("1" :content "later")))))))
+    (should-not (le::cci-prompt2--paste-sibling index "s1" "1" 200.0 1))
+    (should-not (le::cci-prompt2--paste-sibling index "s1" "1" 100.0 1))))
+
+(ert-deftest le::cci-prompt2-paste-test-sibling-stays-in-session ()
+  "Another session's payload under the same paste id is not a candidate."
+  (let ((index (le::cci-prompt2--paste-index
+                (list (le::cci-prompt2-paste-test--record
+                       "s2" 100.0
+                       (le::cci-prompt2-paste-test--pasted '("1" :content "theirs")))))))
+    (should-not (le::cci-prompt2--paste-sibling index "s1" "1" 200.0 1))
+    (should (equal (le::cci-prompt2--paste-sibling index "s2" "1" 200.0 1)
+                   "theirs"))))
+
+(ert-deftest le::cci-prompt2-paste-test-line-count ()
+  "Line counting matches the \"+K lines\" convention: newlines plus one."
+  (should (equal (le::cci-prompt2--paste-line-count "one") 1))
+  (should (equal (le::cci-prompt2--paste-line-count "a\nb") 2))
+  (should (equal (le::cci-prompt2--paste-line-count "a\nb\n") 3)))
+
+
+;;;; The cache, the marker, and the lookup that orders them
+
+(ert-deftest le::cci-prompt2-paste-test-cache-content ()
+  "A cache hit returns the file verbatim; a miss returns nil."
+  (let ((dir (file-name-as-directory (make-temp-file "cci-paste-test" t))))
+    (unwind-protect
+        (let ((le::cci-prompt2--paste-cache-dir dir))
+          (with-temp-file (expand-file-name "abc123.txt" dir)
+            (insert "cached\npayload"))
+          (should (equal (le::cci-prompt2--paste-cache-content "abc123")
+                         "cached\npayload"))
+          (should-not (le::cci-prompt2--paste-cache-content "deadbeef")))
+      (delete-directory dir t))))
+
+(ert-deftest le::cci-prompt2-paste-test-hash-must-be-hex ()
+  "A contentHash that could name a file outside the cache is refused."
+  (should (equal (le::cci-prompt2--paste-hash
+                  (gethash "1" (le::cci-prompt2-paste-test--pasted
+                                '("1" :hash "0123456789abcdef"))))
+                 "0123456789abcdef"))
+  (should-not (le::cci-prompt2--paste-hash
+               (gethash "1" (le::cci-prompt2-paste-test--pasted
+                             '("1" :hash "../../etc/passwd")))))
+  (should-not (le::cci-prompt2--paste-hash
+               (gethash "1" (le::cci-prompt2-paste-test--pasted
+                             '("1" :content "inline")))))
+  (should-not (le::cci-prompt2--paste-hash nil)))
+
+(ert-deftest le::cci-prompt2-paste-test-marker ()
+  "The marker names the paste and its claimed length, and is not prose."
+  (should (equal (le::cci-prompt2--paste-marker "6" 5)
+                 "[paste #6 unrecoverable: 5 lines]"))
+  (should (equal (le::cci-prompt2--paste-marker "2" 1)
+                 "[paste #2 unrecoverable: 1 line]")))
+
+(ert-deftest le::cci-prompt2-paste-test-lookup-source-order ()
+  "The cache outranks a sibling, a sibling outranks the marker."
+  (let ((dir (file-name-as-directory (make-temp-file "cci-paste-test" t))))
+    (unwind-protect
+        (let* ((le::cci-prompt2--paste-cache-dir dir)
+               (index (le::cci-prompt2--paste-index
+                       (list (le::cci-prompt2-paste-test--record
+                              "s1" 100.0
+                              (le::cci-prompt2-paste-test--pasted
+                               '("1" :content "sibling")
+                               '("2" :content "sibling"))))))
+               (elided (le::cci-prompt2-paste-test--record
+                        "s1" 300.0
+                        (le::cci-prompt2-paste-test--pasted
+                         '("1" :hash "abc123"))))
+               (bare (le::cci-prompt2-paste-test--record "s1" 300.0 nil)))
+          (with-temp-file (expand-file-name "abc123.txt" dir) (insert "cached"))
+          ;; id 1 is in the cache AND has a sibling -- the cache answers
+          (should (equal (funcall (le::cci-prompt2--paste-lookup elided index) "1" 1)
+                         "cached"))
+          ;; id 2 is only a sibling
+          (should (equal (funcall (le::cci-prompt2--paste-lookup bare index) "2" 1)
+                         "sibling"))
+          ;; id 3 is neither
+          (should (equal (funcall (le::cci-prompt2--paste-lookup bare index) "3" 4)
+                         "[paste #3 unrecoverable: 4 lines]")))
+      (delete-directory dir t))))
+
+(ert-deftest le::cci-prompt2-paste-test-lookup-never-declines ()
+  "Every placeholder comes out expanded or marked -- never left bare."
+  (let* ((index (le::cci-prompt2--paste-index
+                 (list (le::cci-prompt2-paste-test--record
+                        "s1" 100.0
+                        (le::cci-prompt2-paste-test--pasted
+                         '("2" :content "borrowed\ntwo"))))))
+         (record (le::cci-prompt2-paste-test--record
+                  "s1" 300.0
+                  (le::cci-prompt2-paste-test--pasted '("1" :content "own"))))
+         (text (le::cci-prompt2--expand-pastes
+                "[Pasted text #1 +0 lines] [Pasted text #2 +1 lines] [Pasted text #3 +9 lines]"
+                (plist-get record :pasted)
+                (le::cci-prompt2--paste-lookup record index))))
+    (should (equal text
+                   "own borrowed\ntwo [paste #3 unrecoverable: 10 lines]"))
+    (should-not (string-match-p "Pasted text #" text))))
+
 (provide 'le-cci-prompt2-paste-test)
 ;;; le-cci-prompt2-paste-test.el ends here
