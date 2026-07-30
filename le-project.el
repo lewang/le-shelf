@@ -26,12 +26,72 @@
 ;; file's project?" but "which project does the user MEAN?" -- asking the `w'
 ;; workspace before the buffer.  Commands using ambient location as a LOCATOR
 ;; want it; ones acting ON the current buffer or file do not.
+;;
+;; The predicates below state the membership rule -- "the `.le-playground'
+;; worktree belongs to its parent repo" -- once, for the callers that each need
+;; it in a different shape: `w's buffer adoption knob, claude-code-ide's parent
+;; session knob, and le-ide's file-belongs test.  They split by ARITY rather
+;; than one function bending into every role; the identity-vs-containment
+;; difference between the last two is load-bearing, not incidental.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'project)
 (require 'w)
+
+;;;; The .le-playground membership rule
+
+(defconst le::project-playground-name ".le-playground"
+  "Name of the playground worktree a project may keep beside its source.")
+
+(defun le::project-playground-dir (root)
+  "Return ROOT's playground worktree path, slash-terminated.
+Names the path; does not check that it exists.  The one place
+`le::project-playground-name' is joined to a root."
+  (file-name-as-directory
+   (expand-file-name le::project-playground-name root)))
+
+;;;###autoload
+(defun le::project-playground-p (dir)
+  "Return non-nil when DIR is a playground worktree.
+Tests DIR's name and that it carries its own `.git', which is what makes it
+a separate repo rather than a plain subdirectory.
+
+Deliberately does NOT verify that DIR's `project-root' is DIR itself -- that
+stronger check belongs to `le::project-try-playground-super', which is
+building a project object and already paying for `project-try-vc'.  This one
+runs per buffer in `w's pruning path, so it stays cheap."
+  (let ((dir (directory-file-name (expand-file-name dir))))
+    (and (string= le::project-playground-name (file-name-nondirectory dir))
+         (file-exists-p (expand-file-name ".git" dir)))))
+
+(defun le::project-playground-of-p (dir root)
+  "Return non-nil when DIR is ROOT, or is ROOT's playground worktree.
+IDENTITY, not containment: DIR is a resolved project root, so a nested CHILD
+project sitting under ROOT must NOT count -- it is its own project, and
+containment would wrongly admit it.  For the containment reading a buffer's
+arbitrary `default-directory' needs, see
+`le::project-adopt-playground-buffer-p'."
+  (and dir root
+       (let ((dir (directory-file-name (expand-file-name dir))))
+         (or (file-equal-p dir root)
+             (and (le::project-playground-p dir)
+                  (file-equal-p (file-name-directory dir) root))))))
+
+;;;###autoload
+(defun le::project-adopt-playground-buffer-p (buf root)
+  "Return non-nil when BUF sits inside ROOT's playground worktree.
+CONTAINMENT, not identity: BUF's `default-directory' can be any level deep
+inside the playground, so the test is a prefix one -- which also means a repo
+nested INSIDE the playground is adopted.  That is today's behaviour and is
+kept deliberately; deciding it by BUF's own project root would be defensible
+and would change it."
+  (when-let* ((dir (buffer-local-value 'default-directory buf)))
+    (string-prefix-p (le::project-playground-dir root)
+                     (expand-file-name dir))))
+
+;;;; The merged repo + playground project type
 
 (cl-defmethod project-root ((project (head le-playground)))
   "Parent repo root of the le-playground PROJECT.
