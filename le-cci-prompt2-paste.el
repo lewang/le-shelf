@@ -31,38 +31,25 @@ root, no trailing slash).  Merged into M-p/M-n so prompts typed
 straight into the CLI -- or predating the org log file -- are
 still recallable.")
 
-(defun le::cci-prompt2--pasted-substitute (display pasted)
-  "Return DISPLAY with \"[Pasted text #N ...]\" placeholders expanded.
-PASTED is the entry's pastedContents value: a hash table keyed by the
-placeholder number as a string.  Placeholders without a text-type
-entry -- and all placeholders when PASTED is empty or not a table --
-stay as-is."
-  (if (not (and (hash-table-p pasted) (> (hash-table-count pasted) 0)))
-      display
-    (replace-regexp-in-string
-     "\\[Pasted text #\\([0-9]+\\)\\(?: \\+[0-9]+ lines\\)?\\]"
-     (lambda (match)
-       (let ((obj (gethash (match-string 1 match) pasted)))
-         (if (and (hash-table-p obj)
-                  (equal (gethash "type" obj) "text")
-                  (stringp (gethash "content" obj)))
-             (gethash "content" obj)
-           match)))
-     display t t)))
+;;;; Reading the records
 
-(defun le::cci-prompt2--claude-history-entries (root)
-  "Collect project ROOT's prompts from Claude Code's own history.
-Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS), newest
-first, TS in float epoch seconds; nil when
-`le::cci-prompt2--claude-history-file' is unreadable.  The file holds
-every project's prompts, so a raw `search-forward' on the exact
-project field prefilters the few MB before any JSON parsing; the
-parsed object's own project is then compared exactly (the needle can
-also hit prompt text that quotes it, or a longer path sharing the
-prefix)."
+(defun le::cci-prompt2--claude-history-records (root)
+  "Read project ROOT's raw prompt records from Claude Code's own history.
+Returns plists (:display :pasted :ts :session), newest first, TS in
+float epoch seconds and :pasted the entry's own pastedContents; nil
+when `le::cci-prompt2--claude-history-file' is unreadable.  Paste
+placeholders in :display are left alone -- resolving one can need a
+payload recorded on a *different* line, so expansion waits for the
+whole set (see `le::cci-prompt2--claude-history-entries').
+
+The file holds every project's prompts, so a raw `search-forward' on
+the exact project field prefilters the few MB before any JSON
+parsing; the parsed object's own project is then compared exactly (the
+needle can also hit prompt text that quotes it, or a longer path
+sharing the prefix)."
   (let ((file (expand-file-name le::cci-prompt2--claude-history-file))
         (project (directory-file-name (expand-file-name root)))
-        entries)
+        records)
     (when (file-readable-p file)
       (with-temp-buffer
         (insert-file-contents file)
@@ -74,20 +61,109 @@ prefix)."
                    (obj (ignore-errors (json-parse-string line)))
                    (ts (and (hash-table-p obj)
                             (equal (gethash "project" obj) project)
-                            (gethash "timestamp" obj)))
-                   (text (and (numberp ts)
-                              (stringp (gethash "display" obj))
-                              (string-trim
-                               (le::cci-prompt2--pasted-substitute
-                                (gethash "display" obj)
-                                (gethash "pastedContents" obj))))))
-              (when (and text (not (string-empty-p text)))
-                (push (list :id nil :state "CLI" :text text :ts (/ ts 1000.0))
-                      entries)))
+                            (gethash "timestamp" obj))))
+              (when (and (numberp ts) (stringp (gethash "display" obj)))
+                (push (list :display (gethash "display" obj)
+                            :pasted (gethash "pastedContents" obj)
+                            :ts (/ ts 1000.0)
+                            :session (gethash "sessionId" obj))
+                      records)))
             ;; One entry per line -- don't re-hit the same line when the
             ;; needle also appears inside its display text.
             (forward-line 1)))))
-    entries))
+    records))
+
+;;;; Expanding the placeholders
+
+(defconst le::cci-prompt2--paste-placeholder-re
+  "\\[Pasted text #\\([0-9]+\\)\\(?: \\+\\([0-9]+\\) lines\\)?\\]"
+  "Matches one \"[Pasted text #N +K lines]\" placeholder in a display string.
+Group 1 is the paste id, group 2 the K of the \"+K lines\" suffix when
+it is present.  K counts the lines after the first, so a payload
+answering the placeholder has K+1 of them.")
+
+(defun le::cci-prompt2--paste-expected-lines (k)
+  "Return the payload line count a \"+K lines\" suffix implies.
+K is the suffix's digits as a string, or nil for a suffix-less
+placeholder -- which stands for a single line."
+  (if k (1+ (string-to-number k)) 1))
+
+(defun le::cci-prompt2--paste-content (obj)
+  "Return OBJ's inline paste payload, or nil.
+OBJ is one pastedContents value.  A text-type entry usually carries
+its payload under `content', but an elided one carries only a
+`contentHash' -- there is nothing inline to return."
+  (and (hash-table-p obj)
+       (equal (gethash "type" obj) "text")
+       (let ((content (gethash "content" obj)))
+         (and (stringp content) content))))
+
+(defun le::cci-prompt2--expand-pastes (display pasted lookup)
+  "Return DISPLAY with its \"[Pasted text #N ...]\" placeholders expanded.
+PASTED is the entry's own pastedContents: a hash table keyed by the
+paste id as a string.  Each placeholder takes the first source that
+answers -- PASTED's own inline payload, then LOOKUP -- and is left
+verbatim when neither does.
+
+LOOKUP is nil, or a function of (ID EXPECTED-LINES) returning a
+payload string or nil.  EXPECTED-LINES is what the placeholder's \"+K
+lines\" suffix implies, so a LOOKUP reaching outside this entry can
+reject a candidate whose length disagrees."
+  (replace-regexp-in-string
+   le::cci-prompt2--paste-placeholder-re
+   (lambda (match)
+     (let ((id (match-string 1 match)))
+       (or (and (hash-table-p pasted)
+                (le::cci-prompt2--paste-content (gethash id pasted)))
+           (and lookup
+                (funcall lookup id
+                         (le::cci-prompt2--paste-expected-lines
+                          (match-string 2 match))))
+           match)))
+   display t t))
+
+(defun le::cci-prompt2--paste-index (records)
+  "Index every inline paste payload in RECORDS for cross-entry lookup.
+Returns a hash table keying \"SESSION\\0ID\" to a list of (TS
+. CONTENT), one pair per payload recorded under that paste id in that
+session.  The key is session-scoped because paste ids number from one
+per session and are reused within a long-lived one, so an id alone
+identifies nothing."
+  (let ((index (make-hash-table :test #'equal)))
+    (dolist (record records)
+      (let ((pasted (plist-get record :pasted))
+            (session (plist-get record :session))
+            (ts (plist-get record :ts)))
+        (when (and (hash-table-p pasted) (stringp session))
+          (maphash
+           (lambda (id obj)
+             (when-let* ((content (le::cci-prompt2--paste-content obj)))
+               (push (cons ts content)
+                     (gethash (concat session "\0" id) index))))
+           pasted))))
+    index))
+
+;;;; The merged entry list
+
+(defun le::cci-prompt2--claude-history-entries (root)
+  "Collect project ROOT's prompts from Claude Code's own history.
+Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS), newest
+first, TS in float epoch seconds.  TEXT carries its paste
+placeholders expanded as far as the history's own records allow; an
+entry whose text is empty is dropped."
+  (let ((records (le::cci-prompt2--claude-history-records root))
+        entries)
+    (dolist (record records)
+      (let ((text (string-trim
+                   (le::cci-prompt2--expand-pastes
+                    (plist-get record :display)
+                    (plist-get record :pasted)
+                    nil))))
+        (unless (string-empty-p text)
+          (push (list :id nil :state "CLI" :text text
+                      :ts (plist-get record :ts))
+                entries))))
+    (nreverse entries)))
 
 (provide 'le-cci-prompt2-paste)
 ;;; le-cci-prompt2-paste.el ends here
