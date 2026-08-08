@@ -26,30 +26,41 @@
 (declare-function vterm-send-key "vterm")
 (declare-function ghostel-send-C-g "ghostel")
 (declare-function server-edit "server")
-(declare-function claude-code-ide-send-prompt "claude-code-ide")
+(declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
+(declare-function claude-code-ide--buffer-session "claude-code-ide" (&optional buffer))
+(declare-function claude-code-ide-mcp--get-session-by-id "claude-code-ide-mcp" (session-id))
+(declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
 
-(defvar claude-code-ide-mcp-server--sessions)
-(defvar claude-code-ide--routing-tokens)
 (defvar server-buffer-clients)
 (defvar server-client-instructions)
 
+(defun le::cci-prompt2--client-session-id (client)
+  "Return the CCI session id CLIENT was launched under, or nil.
+`emacsclient' forwards its whole environment as `-env' commands and
+`server.el' keeps it on the `env' process property, so the id Emacs
+exported when starting the instance comes back with the connection."
+  (when-let* ((env (process-get client 'env))
+              (entry (seq-find (lambda (e)
+                                 (string-prefix-p "CLAUDE_CODE_IDE_SESSION_ID=" e))
+                               env)))
+    (substring entry (length "CLAUDE_CODE_IDE_SESSION_ID="))))
+
 (defun le::cci-prompt2--session-buffer-for-client ()
   "Return the CCI session buffer for the emacsclient connection that
-opened the current buffer, resolved via the connecting client's
-working directory, or nil.
-`emacsclient' sends its cwd as a `-dir' protocol command (so relative
-filenames resolve correctly); `server.el' stores it as the
-`server-client-directory' process property.  That directory is
-matched against `claude-code-ide--routing-tokens' the same way
-`le::cci-prompt2--dir-for-cci-buffer' does, even though the temp file
-itself carries no session-identifying information."
-  (when-let* ((client (car server-buffer-clients))
-              (dir (process-get client 'server-client-directory))
-              (token (gethash dir claude-code-ide--routing-tokens))
-              (session (gethash token claude-code-ide-mcp-server--sessions))
-              (buf (plist-get session :buffer))
-              ((buffer-live-p buf)))
-    buf))
+opened the current buffer, or nil.
+Prefers the session id the client carries in its environment: a project
+may run several instances, and the connection's working directory --
+`emacsclient' sends its cwd as a `-dir' command, which `server.el'
+stores as `server-client-directory' -- cannot tell them apart.  Falls
+back to that directory for a session started before the id was
+exported, which resolves to the project's most recent instance."
+  (when-let* ((client (car server-buffer-clients)))
+    (let* ((session (or (when-let* ((id (le::cci-prompt2--client-session-id client)))
+                          (claude-code-ide-mcp--get-session-by-id id))
+                        (when-let* ((dir (process-get client 'server-client-directory)))
+                          (le::cci-prompt2--session-for-root dir))))
+           (buf (and session (claude-code-ide-mcp-session-buffer session))))
+      (and (buffer-live-p buf) buf))))
 
 (defun le::cci-prompt2--server-edit-with-message (message-text)
   "Call `server-edit', showing MESSAGE-TEXT instead of its own \"When
@@ -145,8 +156,10 @@ e.g. \"foo\" for ~/src/foo).  Aborts on an empty prompt."
          (text (read-string (format "Claude prompt (%s): " name))))
     (unless (string-empty-p text)
       (if (buffer-live-p cci-buf)
-          (with-current-buffer cci-buf
-            (claude-code-ide-send-prompt text))
+          ;; Name the instance outright rather than leaning on the current
+          ;; buffer: with several per project, resolution from ambient state
+          ;; can land on a sibling
+          (claude-code-ide-send-prompt text (claude-code-ide--buffer-session cci-buf))
         (let ((default-directory root))
           (claude-code-ide-send-prompt text))))))
 

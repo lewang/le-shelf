@@ -26,14 +26,17 @@
 (require 'w)
 
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
-(declare-function claude-code-ide--get-buffer-name "claude-code-ide")
+(declare-function claude-code-ide--buffer-session "claude-code-ide" (&optional buffer))
+(declare-function claude-code-ide--session-display-name "claude-code-ide" (session))
+(declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
+(declare-function claude-code-ide-mcp--mru-session "claude-code-ide-mcp" (project-dir))
+(declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function le::cci-prompt2-history-previous "le-cci-prompt2-history")
 (declare-function le::cci-prompt2-history-next "le-cci-prompt2-history")
 (declare-function le::cci-prompt2-commit "le-cci-prompt2-commit")
 (declare-function le::cci-prompt2-cancel "le-cci-prompt2-commit")
 
-(defvar claude-code-ide-mcp-server--sessions)
-(defvar claude-code-ide--routing-tokens)
 
 ;;;; Buffer-local state
 
@@ -71,56 +74,52 @@ SIBLINGS is the number of other EDITING headings at open time."
 Set when the user picks a CCI session for a buffer that has no
 natural mapping.  Persists across `le::cci-prompt2-edit' calls.")
 
-(defun le::cci-prompt2--live-cci-buffers ()
-  "Return alist of (BUFFER-NAME . DIRECTORY) for all live CCI sessions."
-  (let (result)
-    (maphash (lambda (dir tok)
-               (when-let* ((session (gethash tok claude-code-ide-mcp-server--sessions))
-                            (buf (plist-get session :buffer))
-                            ((buffer-live-p buf)))
-                 (push (cons (buffer-name buf) dir) result)))
-             claude-code-ide--routing-tokens)
-    result))
+(defun le::cci-prompt2--live-cci-sessions ()
+  "Return every CCI session whose terminal buffer is still live.
+A project may run several, so this is a flat list across all projects
+rather than one entry per directory."
+  (seq-filter (lambda (session)
+                (buffer-live-p (claude-code-ide-mcp-session-buffer session)))
+              (claude-code-ide-mcp--active-sessions)))
+
+(defun le::cci-prompt2--session-for-root (root)
+  "Return the CCI session ROOT's prompts should target, or nil.
+With several instances in one project the most recently used one wins:
+it is the one the user was last talking to, and unlike position in the
+session table that choice is stable across renders."
+  (when root
+    (claude-code-ide-mcp--mru-session (expand-file-name root))))
 
 (defun le::cci-prompt2--dir-for-cci-buffer (cci-buf)
-  "Return the directory associated with CCI-BUF, or nil."
-  (catch 'found
-    (maphash (lambda (dir tok)
-               (when-let* ((session (gethash tok claude-code-ide-mcp-server--sessions))
-                            (buf (plist-get session :buffer))
-                            ((eq buf cci-buf)))
-                 (throw 'found dir)))
-             claude-code-ide--routing-tokens)))
+  "Return the project directory CCI-BUF belongs to, or nil.
+Reads the buffer's own session backpointer, so it is authoritative even
+where `default-directory' is not -- which is the case in terminal
+buffers."
+  (when-let* ((session (claude-code-ide--buffer-session cci-buf)))
+    (claude-code-ide-mcp-session-project-dir session)))
 
-(defun le::cci-prompt2--buffer-cci-buffer ()
-  "Return the CCI session buffer mapped from the current buffer's directory.
-Resolution is by `default-directory' / project via the routing table, matching
-`le::cci-prompt2--resolve-cci-target' step 4.  Nil when no live session maps."
-  (when-let* ((root (claude-code-ide--get-working-directory))
-              (buf-name (claude-code-ide--get-buffer-name root))
-              (buf (get-buffer buf-name)))
-    buf))
+(defun le::cci-prompt2--buffer-cci-session ()
+  "Return the CCI session mapped from the current buffer's directory.
+Resolution is by `default-directory' / project, matching
+`le::cci-prompt2--resolve-cci-target' step 4.  Nil when nothing runs
+there."
+  (le::cci-prompt2--session-for-root (claude-code-ide--get-working-directory)))
 
-(defun le::cci-prompt2--workspace-cci-buffer ()
-  "Return the CCI session buffer for the current `w' workspace.
-Nil when there is no current workspace or root, or no live session maps to
-that root."
+(defun le::cci-prompt2--workspace-cci-session ()
+  "Return the CCI session for the current `w' workspace, or nil."
   (when-let* ((ws (w-current))
-              (root (plist-get ws :project-root))
-              (buf-name (claude-code-ide--get-buffer-name (expand-file-name root)))
-              (buf (get-buffer buf-name)))
-    buf))
+              (root (plist-get ws :project-root)))
+    (le::cci-prompt2--session-for-root root)))
 
-(defun le::cci-prompt2--order-cci-names (names)
-  "Order NAMES: current buffer's cci, workspace's cci, then everything else.
-Priority entries not present in NAMES are dropped; duplicates are collapsed
+(defun le::cci-prompt2--order-cci-sessions (sessions)
+  "Order SESSIONS: current buffer's cci, workspace's cci, then the rest.
+Priority entries absent from SESSIONS are dropped; duplicates collapse
 (buffer's and workspace's cci coincide in single-project work)."
-  (let* ((priority (delq nil (list (when-let* ((b (le::cci-prompt2--buffer-cci-buffer)))
-                                     (buffer-name b))
-                                   (when-let* ((b (le::cci-prompt2--workspace-cci-buffer)))
-                                     (buffer-name b)))))
-         (head (seq-filter (lambda (n) (member n names)) (delete-dups priority))))
-    (append head (seq-remove (lambda (n) (member n head)) names))))
+  (let* ((priority (delq nil (list (le::cci-prompt2--buffer-cci-session)
+                                   (le::cci-prompt2--workspace-cci-session))))
+         (head (seq-filter (lambda (s) (memq s sessions))
+                           (delete-dups priority))))
+    (append head (seq-remove (lambda (s) (memq s head)) sessions))))
 
 (defun le::cci-prompt2--session-completion-table (names)
   "Completion table over NAMES that preserves their given order in the UI."
@@ -130,64 +129,77 @@ Priority entries not present in NAMES are dropped; duplicates are collapsed
                    (cycle-sort-function . identity))
       (complete-with-action action names string pred))))
 
-(defun le::cci-prompt2--choose-cci-buffer ()
-  "Prompt the user to pick a live CCI buffer.
-The candidate list is ordered current buffer's cci, workspace's cci, then the
-rest; the default (bare RET) is the first entry.
-If only one CCI buffer exists, return it without prompting."
-  (let* ((alist (le::cci-prompt2--live-cci-buffers))
-         (names (le::cci-prompt2--order-cci-names (mapcar #'car alist))))
-    (unless names
+(defun le::cci-prompt2--choose-cci-session ()
+  "Prompt the user to pick a live CCI session.
+Candidates are ordered current buffer's cci, workspace's cci, then the
+rest, and the default (bare RET) is the first.  A lone session is
+returned without prompting.  Labels come from
+`claude-code-ide--session-display-name', so two instances of one project
+are distinguishable -- which buffer names alone no longer guarantee."
+  (let ((sessions (le::cci-prompt2--order-cci-sessions
+                   (le::cci-prompt2--live-cci-sessions))))
+    (unless sessions
       (user-error "No live CCI sessions"))
-    (if (= (length names) 1)
-        (get-buffer (car names))
-      (let ((chosen (completing-read
-                     "CCI session: "
-                     (le::cci-prompt2--session-completion-table names)
-                     nil t nil nil (car names))))
-        (get-buffer chosen)))))
+    (if (null (cdr sessions))
+        (car sessions)
+      (let* ((pairs (mapcar (lambda (s)
+                              (cons (claude-code-ide--session-display-name s) s))
+                            sessions))
+             (names (mapcar #'car pairs))
+             (chosen (completing-read
+                      "CCI session: "
+                      (le::cci-prompt2--session-completion-table names)
+                      nil t nil nil (car names))))
+        (cdr (assoc chosen pairs))))))
 
 (defun le::cci-prompt2--resolve-cci-target (force-choose)
   "Resolve the target CCI buffer and its root directory.
 When FORCE-CHOOSE is non-nil, always prompt.  When the current
 buffer is itself a CCI session buffer, it is the target.
 Returns (ROOT . CCI-BUFFER) or signals an error."
-  (let (cci-buf)
+  (let (session cci-buf)
     (cond
      ;; C-u: always prompt and save
      (force-choose
-      (setq cci-buf (le::cci-prompt2--choose-cci-buffer))
-      (setq le::cci-prompt2--target-cci-buffer cci-buf))
-     ;; Invoked from a CCI session buffer? It is the target.  Resolved via
-     ;; the routing-token table, not `default-directory', which is not
-     ;; authoritative in terminal buffers.
-     ((le::cci-prompt2--dir-for-cci-buffer (current-buffer))
-      (setq cci-buf (current-buffer)))
+      (setq session (le::cci-prompt2--choose-cci-session))
+      (setq le::cci-prompt2--target-cci-buffer
+            (claude-code-ide-mcp-session-buffer session)))
+     ;; Invoked from a CCI terminal? It is the target.  Read from the
+     ;; buffer's session backpointer, not `default-directory', which is
+     ;; not authoritative in terminal buffers -- and which could not
+     ;; distinguish two instances of one project anyway.
+     ((claude-code-ide--buffer-session (current-buffer))
+      (setq session (claude-code-ide--buffer-session (current-buffer))))
      ;; Saved override still live?
      ((and le::cci-prompt2--target-cci-buffer
            (buffer-live-p le::cci-prompt2--target-cci-buffer))
-      (setq cci-buf le::cci-prompt2--target-cci-buffer))
+      (setq session (claude-code-ide--buffer-session
+                     le::cci-prompt2--target-cci-buffer)))
      ;; Resolve from the buffer's own directory, disambiguating when it
      ;; disagrees with the workspace's cci.
      (t
-      (let ((buf (le::cci-prompt2--buffer-cci-buffer))
-            (ws-buf (le::cci-prompt2--workspace-cci-buffer)))
+      (let ((buf-session (le::cci-prompt2--buffer-cci-session))
+            (ws-session (le::cci-prompt2--workspace-cci-session)))
         (cond
          ;; Buffer's own cci disagrees with the workspace's — disambiguate on
          ;; every invocation, without persisting (cross-project work).
-         ((and buf ws-buf (not (eq buf ws-buf)))
-          (setq cci-buf (le::cci-prompt2--choose-cci-buffer)))
+         ((and buf-session ws-session (not (eq buf-session ws-session)))
+          (setq session (le::cci-prompt2--choose-cci-session)))
          ;; Buffer's own cci agrees, or there is no workspace cci — auto-pick.
-         (buf
-          (setq cci-buf buf))
+         (buf-session
+          (setq session buf-session))
          ;; No natural mapping — prompt once and remember.
          (t
-          (setq cci-buf (le::cci-prompt2--choose-cci-buffer))
-          (setq le::cci-prompt2--target-cci-buffer cci-buf))))))
-    (let ((dir (le::cci-prompt2--dir-for-cci-buffer cci-buf)))
-      (unless dir
-        (user-error "Cannot find directory for %s" (buffer-name cci-buf)))
-      (cons dir cci-buf))))
+          (setq session (le::cci-prompt2--choose-cci-session))
+          (setq le::cci-prompt2--target-cci-buffer
+                (claude-code-ide-mcp-session-buffer session)))))))
+    (unless session
+      (user-error "No live CCI session for this buffer"))
+    (setq cci-buf (claude-code-ide-mcp-session-buffer session))
+    (unless (buffer-live-p cci-buf)
+      (user-error "CCI session %s has no live buffer"
+                  (claude-code-ide--session-display-name session)))
+    (cons (claude-code-ide-mcp-session-project-dir session) cci-buf)))
 
 ;;;; Major mode and keymaps
 

@@ -24,7 +24,8 @@
 (require 'le-cci-prompt2-core)
 (require 'le-cci-prompt2-log)
 
-(declare-function claude-code-ide-send-prompt "claude-code-ide")
+(declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
+(declare-function claude-code-ide--buffer-session "claude-code-ide" (&optional buffer))
 
 (defun le::cci-prompt2--restore-window (window)
   "Select WINDOW if it is still live; no-op otherwise.
@@ -105,8 +106,11 @@ send flips the state."
       (condition-case err
           (progn
             (if (buffer-live-p cci-buf)
-                (with-current-buffer cci-buf
-                  (claude-code-ide-send-prompt text))
+                ;; Name the instance outright rather than leaning on the
+                ;; current buffer: with several per project, resolution from
+                ;; ambient state can land on a sibling
+                (claude-code-ide-send-prompt
+                 text (claude-code-ide--buffer-session cci-buf))
               (let ((default-directory root))
                 (claude-code-ide-send-prompt text)))
             (with-current-buffer log-buf
