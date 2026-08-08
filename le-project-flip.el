@@ -4,11 +4,15 @@
 
 ;; `le::project-flip' / `le::project-flip-backward' cycle buffers (via
 ;; buffer-flip) restricted to the current `w' workspace's project: they
-;; `let'-bind `buffer-flip-skip-patterns' with a predicate that skips any
-;; buffer whose `default-directory' is outside the workspace's `:project-root',
-;; then hand off to `buffer-flip-forward' / `buffer-flip-backward', which
-;; capture the binding for the whole cycling session (see buffer-flip).  Both
-;; share `le::project-flip--run'.
+;; `let'-bind `buffer-flip-skip-patterns' with a predicate that skips whatever
+;; would not DISPLAY in the pane being flipped, then hand off to
+;; `buffer-flip-forward' / `buffer-flip-backward', which capture the binding
+;; for the whole cycling session (see buffer-flip).  Both share
+;; `le::project-flip--run'.
+;;
+;; The scoping decision itself is pure -- `le::project-flip--keep-p' maps a
+;; pane role and a project root to a predicate -- so it is tested directly,
+;; and `--run' stays a thin caller that negates it.
 ;;
 ;; This file is dedicated to the buffer-flip entrance, so it hard-`require's
 ;; buffer-flip up front -- le-shelf's `Package-Requires' names buffer-flip, so
@@ -23,44 +27,58 @@
 (declare-function le::ide-compatible-layout "le-ide" ())
 (declare-function le::frame-top-left-buffer-p "le-frame" (buf &optional act))
 (declare-function le::frame-bottom-left-buffer-p "le-frame" (buf &optional act))
+(declare-function le::frame-cc-buffer-p "le-frame" (buf &optional act))
 
-(defun le::project-flip--pane-keep-p ()
-  "Return a keep-predicate for the selected IDE pane, or nil.
-When the selected window is a recognized left-column pane of the 3-pane
-IDE layout (`le::ide-compatible-layout'), return the same routing
-predicate `display-buffer-alist' uses to fill that pane -- so a flip
-cycles only buffers that would DISPLAY there: top-left drops popups and
-magit-status, bottom-left keeps only magit-status and popups.  Outside the
-layout, or in the cc window, return nil (no pane filtering)."
+(defun le::project-flip--pane-role ()
+  "Return the IDE pane the selected window occupies, or nil.
+One of `cc', `top-left' or `bottom-left' when the frame has the recognized
+3-pane layout (`le::ide-compatible-layout'); nil outside it, and nil for a
+window the layout does not account for."
   (when-let* ((layout (le::ide-compatible-layout)))
     (let ((win (selected-window)))
       (cond
-       ((eq win (plist-get layout :top-left))    #'le::frame-top-left-buffer-p)
-       ((eq win (plist-get layout :bottom-left)) #'le::frame-bottom-left-buffer-p)
-       (t nil)))))
+       ((eq win (plist-get layout :cc-win))      'cc)
+       ((eq win (plist-get layout :top-left))    'top-left)
+       ((eq win (plist-get layout :bottom-left)) 'bottom-left)))))
+
+(defun le::project-flip--keep-p (role root)
+  "Return the predicate deciding which buffers a flip may surface.
+ROLE is a pane from `le::project-flip--pane-role' and ROOT the workspace's
+project root.  Each pane cycles what would DISPLAY there, reusing the same
+routing predicates `display-buffer-alist' fills it with: top-left drops
+popups and magit-status, bottom-left keeps only those, and the cc pane keeps
+the project's Claude terminals.  With no ROLE, workspace membership alone.
+
+The cc pane's predicate stands ALONE; the others compose with
+`w-buffer-in-project-p'.  That predicate reads `default-directory', which in
+a terminal buffer tracks the shell's cwd and so drifts once Claude changes
+directory -- composing it in would drop instances that
+`le::frame-cc-buffer-p' has already scoped to the project by session record."
+  (if (eq role 'cc)
+      #'le::frame-cc-buffer-p
+    (let ((pane (pcase role
+                  ('top-left    #'le::frame-top-left-buffer-p)
+                  ('bottom-left #'le::frame-bottom-left-buffer-p))))
+      (lambda (buf)
+        (and (w-buffer-in-project-p buf root)
+             (or (null pane) (funcall pane buf)))))))
 
 (defun le::project-flip--run (flip-fn)
   "Cycle buffers scoped to the current `w' workspace project, via FLIP-FN.
 FLIP-FN is `buffer-flip-forward' or `buffer-flip-backward'.  Resolve the
-workspace's `:project-root' and cycle only buffers that belong to it per
-`w-buffer-in-project-p' -- the project's own file buffers, dired, magit,
-shells, etc., plus any adopted `.le-playground' scratchpad, while a nested
-CHILD project's buffers are skipped (they belong to their own workspace).
-
-Two composed filters: workspace membership, then -- when flipping inside a
-recognized IDE pane -- the selected window's display role (see
-`le::project-flip--pane-keep-p'), so cycling a pane never surfaces buffers
-that would display in a different pane (e.g. popups in the top-left).
+workspace's `:project-root' and cycle only what
+`le::project-flip--keep-p' keeps for the selected pane -- by default the
+project's own file buffers, dired, magit, shells and any adopted
+`.le-playground' scratchpad, while a nested CHILD project's buffers are
+skipped (they belong to their own workspace).
 
 Works by `let'-binding `buffer-flip-skip-patterns' with the skip predicate
 consed onto the front, then calling FLIP-FN, which captures the binding for the
 whole cycling session (see buffer-flip).  With no workspace project root, fall
 back to an unrestricted flip (both directions)."
   (if-let* ((root (plist-get (w-current) :project-root)))
-      (let* ((pane-keep-p (le::project-flip--pane-keep-p))
-             (skip (lambda (buf)
-                     (or (not (w-buffer-in-project-p buf root))
-                         (and pane-keep-p (not (funcall pane-keep-p buf))))))
+      (let* ((keep-p (le::project-flip--keep-p (le::project-flip--pane-role) root))
+             (skip (lambda (buf) (not (funcall keep-p buf))))
              (buffer-flip-skip-patterns (cons skip buffer-flip-skip-patterns)))
         (funcall flip-fn))
     (funcall flip-fn)))
