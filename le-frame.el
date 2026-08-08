@@ -13,6 +13,11 @@
 
 (declare-function popper-popup-p "popper" (buf))
 (declare-function ediff-setup-windows-plain "ediff-wind" (buffer-a buffer-b buffer-c control-buffer))
+(declare-function claude-code-ide-mcp--sessions-for-project "claude-code-ide-mcp" (project-dir))
+(declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
+(declare-function claude-code-ide--display-buffer-in-side-window "claude-code-ide" (buffer &optional tile))
+
+(defvar claude-code-ide-focus-on-open)
 
 ;;;; ---------------------------------------------------------------
 ;;;; Window layout — display-buffer helpers
@@ -63,12 +68,33 @@ or project."
 ;;;; IDE pane routing predicates
 ;;;; ---------------------------------------------------------------
 
-;; Which of the two left-column IDE panes a buffer displays in, factored out of
-;; the `display-buffer-alist' rules so the buffer-flip entrances
+;; Which IDE pane a buffer displays in, factored out of the
+;; `display-buffer-alist' rules so the buffer-flip entrances
 ;; (`le::project-flip') can reuse the SAME routing when scoping a flip to a
-;; pane.  The alist is ordered short-before-tall, so the effective membership is
-;; mutually exclusive: bottom-left claims magit-status + popups, top-left gets
-;; everything else.
+;; pane.  Membership is mutually exclusive: the cc pane claims the workspace's
+;; Claude terminals, bottom-left claims magit-status + popups, top-left gets
+;; everything else.  The alist is ordered cc, then short-before-tall.
+
+(defun le::frame--workspace-cc-buffers ()
+  "Return the live Claude terminal buffers of the current workspace's project.
+Membership comes from claude-code-ide's own session table, not from each
+buffer's `default-directory' -- in a terminal buffer that tracks the shell's
+cwd, so it drifts as soon as Claude changes directory."
+  (when-let* ((root (plist-get (w-current) :project-root)))
+    (delq nil
+          (mapcar (lambda (session)
+                    (when-let* ((buf (claude-code-ide-mcp-session-buffer session)))
+                      (and (buffer-live-p buf) buf)))
+                  (claude-code-ide-mcp--sessions-for-project
+                   (file-name-as-directory (expand-file-name root)))))))
+
+;;;###autoload
+(defun le::frame-cc-buffer-p (buf &optional _act)
+  "Return non-nil if BUF is a Claude terminal of the current workspace.
+Every instance of the project qualifies, not just the visible one, so a
+second instance routes to the same pane the first one occupies."
+  (when-let* ((b (get-buffer buf)))
+    (memq b (le::frame--workspace-cc-buffers))))
 
 ;;;###autoload
 (defun le::frame-bottom-left-buffer-p (buf &optional act)
@@ -78,11 +104,27 @@ That pane holds the workspace magit-status and any popper popup."
       (popper-popup-p (get-buffer buf))))
 
 ;;;###autoload
-(defun le::frame-top-left-buffer-p (buf &optional _act)
+(defun le::frame-top-left-buffer-p (buf &optional act)
   "Return non-nil if BUF displays in the tall top-left IDE pane.
-Everything that does not route to the bottom-left pane (see
-`le::frame-bottom-left-buffer-p'): project file buffers, dired, shells."
-  (not (le::frame-bottom-left-buffer-p buf)))
+Everything claimed by neither the cc pane (`le::frame-cc-buffer-p') nor the
+bottom-left one (`le::frame-bottom-left-buffer-p'): project file buffers,
+dired, shells."
+  (not (or (le::frame-bottom-left-buffer-p buf act)
+           (le::frame-cc-buffer-p buf act))))
+
+;;;###autoload
+(defun le::frame-display-cc (buffer _alist)
+  "Display BUFFER in its project's Claude side window, as claude-code-ide would.
+A `display-buffer' action function that delegates rather than spelling out a
+`display-buffer-in-side-window' rule of its own: claude-code-ide owns the slot
+arithmetic that collapses a project's instances onto one window, the width
+function, the hard dedication, and the last-used bookkeeping.
+
+`claude-code-ide-focus-on-open' is suppressed because an action function
+displays and leaves selection to its caller -- `pop-to-buffer' selects the
+window anyway, so the paths that want focus still get it."
+  (let ((claude-code-ide-focus-on-open nil))
+    (claude-code-ide--display-buffer-in-side-window buffer)))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
