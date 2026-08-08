@@ -28,6 +28,22 @@
 ;;;; ---------------------------------------------------------------
 
 ;;;###autoload
+(defun le::ide-hostable-window (&optional frame)
+  "Return a window on FRAME that `display-buffer' could put a new buffer in.
+FRAME defaults to the selected frame.  Returns nil when every window is
+dedicated or is a side window -- `display-buffer-use-some-window' skips
+dedicated windows (`get-lru-window' rejects any non-nil dedication, not just
+t) and `window--try-to-split-window' refuses side windows, so with none left
+`display-buffer' falls through to `display-buffer-pop-up-frame'.
+
+A frame showing only the claude-code-ide session is the case in practice: that
+window is both dedicated and a side window."
+  (cl-find-if-not (lambda (w)
+                    (or (window-dedicated-p w)
+                        (window-parameter w 'window-side)))
+                  (window-list frame 'no-mini)))
+
+;;;###autoload
 (defun le::ide-compatible-layout ()
   "Check if the current window layout matches the expected 3-pane topology.
 Returns a plist (:cc-win W :top-left W :bottom-left W) when compatible,

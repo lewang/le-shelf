@@ -40,6 +40,12 @@
 
 ;;;; Buffer-local state
 
+(defvar le::cci-prompt2--inhibit-window-guard nil
+  "When non-nil, `le::cci-prompt2-edit' skips its hostable-window check.
+Bound by callers that have already arranged a window for the editor, so the
+frame's own topology says nothing about where the edit buffer can go -- the
+`server-switch-hook' handoff in `le-cci-prompt2-cli' is the one such caller.")
+
 (cl-defstruct (le::cci-prompt2--state (:copier nil))
   "State for a prompt edit buffer."
   (cci-buffer nil :documentation "Target CCI session buffer.")

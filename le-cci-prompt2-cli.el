@@ -122,10 +122,15 @@ Should have this setting: (setq server-window \\='pop-to-buffer)"
       (when-let* ((cci-buf)
                   (win (get-buffer-window cci-buf)))
         (select-window win))
-      (if cci-buf
-          (with-current-buffer cci-buf
-            (le::cci-prompt2-edit nil text))
-        (le::cci-prompt2-edit nil text))
+      ;; Exempt from the hostable-window guard: emacsclient already popped the
+      ;; temp file into a window of its own, so this frame's topology says
+      ;; nothing about where the edit buffer can go -- and refusing here would
+      ;; strand the CLI, which is blocked on $EDITOR.
+      (let ((le::cci-prompt2--inhibit-window-guard t))
+        (if cci-buf
+            (with-current-buffer cci-buf
+              (le::cci-prompt2-edit nil text))
+          (le::cci-prompt2-edit nil text)))
       (with-current-buffer prompt-buf
         (erase-buffer)
         (save-buffer))
