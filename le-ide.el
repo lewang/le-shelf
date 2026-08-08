@@ -9,7 +9,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'le-frame)                      ; le::frame-magit-window-height, le::frame-magit-status-p
+(require 'le-frame)                      ; magit-window-height, magit-status-p, demote-window
 (require 'le-project)                    ; le::project-playground-of-p, le::project-root-here
 (require 'w)
 
@@ -147,12 +147,9 @@ Two layout strategies:
            (or (cl-find-if-not #'window-dedicated-p (window-list))
                (selected-window))))
         ;; Survivor may be dedicated or itself a side window (reset invoked from
-        ;; one); demote it to a plain window so the split is safe (no side window
-        ;; -> no Emacs 31 split-window recursion) and `switch-to-buffer' does not
-        ;; error on a dedicated window.
-        (let ((win (selected-window)))
-          (set-window-dedicated-p win nil)
-          (set-window-parameter win 'window-side nil))
+        ;; one); demote it so the split is safe (no side window -> no Emacs 31
+        ;; split-window recursion) and `switch-to-buffer' does not error.
+        (le::frame-demote-window)
         (switch-to-buffer project-buf nil t)
         (setq bottom-left (split-window (selected-window)
                                         (- le::frame-magit-window-height) 'below)))
