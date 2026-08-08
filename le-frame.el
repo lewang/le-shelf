@@ -85,44 +85,15 @@ Everything that does not route to the bottom-left pane (see
   (not (le::frame-bottom-left-buffer-p buf)))
 
 ;;;; ---------------------------------------------------------------
-;;;; Window teardown
-;;;; ---------------------------------------------------------------
-
-;;;###autoload
-(defun le::frame-demote-window (&optional window)
-  "Make WINDOW an ordinary window: not dedicated, not a side window.
-WINDOW defaults to the selected one.
-
-Call this on whatever survives a `delete-other-windows' run under
-`ignore-window-parameters'.  That binding is what lets the teardown delete
-side windows at all, but it also stops Emacs refusing to make a side window
-the frame's ONLY window -- and a side window left as the frame's root is
-unrecoverable.  Nothing complains at the time, because `window--sides-check'
-has no sibling to compare against; the damage lands when the next side window
-is displayed on another side, at which point `delete-window' and
-`delete-other-windows' both signal and the frame cannot be repaired from
-inside Emacs.
-
-Demoting also keeps `switch-to-buffer' from erroring on a dedicated
-survivor, and keeps a later `split-window' off the side-window path."
-  (let ((win (or window (selected-window))))
-    (set-window-dedicated-p win nil)
-    (set-window-parameter win 'window-side nil)))
-
-;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
 ;;;; ---------------------------------------------------------------
 
 ;;;###autoload
 (defun le::ediff-setup-windows-plain (buffer-A buffer-B buffer-C control-buffer)
   "Like `ediff-setup-windows-plain' but start from a single window."
-  ;; No undedicated window means `cl-find-if-not' returns nil and the teardown
-  ;; falls back to the selected window -- which may be the claude-code-ide side
-  ;; window, hence the demotion.
   (let ((ignore-window-parameters t))
     (delete-other-windows
      (cl-find-if-not #'window-dedicated-p (window-list))))
-  (le::frame-demote-window)
   (ediff-setup-windows-plain buffer-A buffer-B buffer-C control-buffer))
 
 (provide 'le-frame)
