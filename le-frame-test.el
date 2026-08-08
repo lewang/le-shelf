@@ -35,6 +35,12 @@
 (defvar le::frame-test--asked-for nil
   "Directory the last stubbed session lookup was called with.")
 
+;; Marks the variable special HERE too.  claude-code-ide's own `defcustom' does
+;; that in a live Emacs, but without it the focus test's `let' is lexical and
+;; the stub closes over the test's own binding instead of reading the dynamic
+;; one the function establishes -- passing or failing for the wrong reason.
+(defvar claude-code-ide-focus-on-open)
+
 (defmacro le::frame-test--with-ide (root sessions &rest body)
   "Run BODY with workspace ROOT and SESSIONS as the project's Claude buffers.
 SESSIONS is an alist of (PROJECT-DIR . BUFFERS).  The lookup records its
@@ -137,6 +143,60 @@ root would match no session at all."
   (le::frame-test--with-buffer "*cci: proj*"
     (le::frame-test--with-ide "/tmp/proj/" (list (cons "/tmp/proj/" (list buf)))
       (should (le::frame-cc-buffer-p (buffer-name buf))))))
+
+;;;; The display action
+
+;; `le::frame-display-cc' declines rather than answering with the very window
+;; the caller asked to avoid.  consult picks its preview window by calling
+;; `switch-to-buffer-other-window' on the original buffer: hand it the cc
+;; window and, being dedicated, it sends every later candidate bouncing into
+;; another pane with nothing to restore it.
+
+(defmacro le::frame-test--with-delegate (&rest body)
+  "Run BODY with the claude-code-ide display delegate stubbed.
+Binds `calls' to a list the stub pushes its BUFFER argument onto."
+  (declare (indent 0) (debug (body)))
+  `(let ((calls nil))
+     (cl-letf (((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                (lambda (buffer &optional _tile) (push buffer calls) 'the-cc-window)))
+       ,@body)))
+
+(ert-deftest le::frame-display-cc/declines-the-window-it-was-told-to-avoid ()
+  "With `inhibit-same-window' and BUFFER already selected, decline untouched."
+  (le::frame-test--with-buffer "*cci: proj*"
+    (le::frame-test--with-delegate
+      (set-window-buffer (selected-window) buf)
+      (should-not (le::frame-display-cc buf '((inhibit-same-window . t))))
+      (should-not calls))))
+
+(ert-deftest le::frame-display-cc/displays-when-the-buffer-is-elsewhere ()
+  "`inhibit-same-window' bars only the SELECTED window, not the cc window."
+  (le::frame-test--with-buffer "*cci: proj*"
+    (le::frame-test--with-delegate
+      (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
+      (should (eq (le::frame-display-cc buf '((inhibit-same-window . t)))
+                  'the-cc-window))
+      (should (equal calls (list buf))))))
+
+(ert-deftest le::frame-display-cc/displays-when-nothing-is-inhibited ()
+  "Without `inhibit-same-window' the selected window is fair game."
+  (le::frame-test--with-buffer "*cci: proj*"
+    (le::frame-test--with-delegate
+      (set-window-buffer (selected-window) buf)
+      (should (eq (le::frame-display-cc buf nil) 'the-cc-window))
+      (should (equal calls (list buf))))))
+
+(ert-deftest le::frame-display-cc/suppresses-claude-code-ide-focus ()
+  "Selection is the caller's business, so the delegate must not grab focus."
+  (le::frame-test--with-buffer "*cci: proj*"
+    (let ((claude-code-ide-focus-on-open t) seen)
+      (cl-letf (((symbol-function 'claude-code-ide--display-buffer-in-side-window)
+                 (lambda (_buffer &optional _tile)
+                   (setq seen claude-code-ide-focus-on-open)
+                   'the-cc-window)))
+        (le::frame-display-cc buf nil)
+        (should-not seen)
+        (should (eq claude-code-ide-focus-on-open t))))))
 
 (provide 'le-frame-test)
 ;;; le-frame-test.el ends here

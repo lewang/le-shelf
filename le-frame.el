@@ -113,18 +113,26 @@ dired, shells."
            (le::frame-cc-buffer-p buf act))))
 
 ;;;###autoload
-(defun le::frame-display-cc (buffer _alist)
+(defun le::frame-display-cc (buffer alist)
   "Display BUFFER in its project's Claude side window, as claude-code-ide would.
 A `display-buffer' action function that delegates rather than spelling out a
 `display-buffer-in-side-window' rule of its own: claude-code-ide owns the slot
 arithmetic that collapses a project's instances onto one window, the width
 function, the hard dedication, and the last-used bookkeeping.
 
+Decline when ALIST forbids the selected window and BUFFER already shows
+there, so `display-buffer' goes on to its other actions.  Claiming it would
+answer `switch-to-buffer-other-window' with the very window it asked to avoid
+-- which is how consult picks its preview window, and a dedicated one sends
+every later candidate bouncing into another pane.
+
 `claude-code-ide-focus-on-open' is suppressed because an action function
 displays and leaves selection to its caller -- `pop-to-buffer' selects the
 window anyway, so the paths that want focus still get it."
-  (let ((claude-code-ide-focus-on-open nil))
-    (claude-code-ide--display-buffer-in-side-window buffer)))
+  (unless (and (cdr (assq 'inhibit-same-window alist))
+               (eq (window-buffer (selected-window)) buffer))
+    (let ((claude-code-ide-focus-on-open nil))
+      (claude-code-ide--display-buffer-in-side-window buffer))))
 
 ;;;; ---------------------------------------------------------------
 ;;;; Ediff: clean slate before window setup
