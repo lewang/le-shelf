@@ -120,17 +120,24 @@ A `display-buffer' action function that delegates rather than spelling out a
 arithmetic that collapses a project's instances onto one window, the width
 function, the hard dedication, and the last-used bookkeeping.
 
-Decline when ALIST forbids the selected window and BUFFER already shows
-there, so `display-buffer' goes on to its other actions.  Claiming it would
-answer `switch-to-buffer-other-window' with the very window it asked to avoid
--- which is how consult picks its preview window, and a dedicated one sends
-every later candidate bouncing into another pane.
+Decline when ALIST forbids the selected window and that window is the Claude
+pane itself -- dedicated, already showing BUFFER -- so `display-buffer' goes
+on to its other actions.  Claiming it would answer
+`switch-to-buffer-other-window' with the very window it asked to avoid, which
+is how consult picks its preview window; a dedicated one sends every later
+candidate bouncing into another pane.
+
+The dedication test is what keeps this narrow.  A plain window showing BUFFER
+is not the Claude pane -- consult leaves exactly that behind when previewing a
+Claude buffer -- and declining there would strand the buffer in the left
+column on RET instead of routing it.
 
 `claude-code-ide-focus-on-open' is suppressed because an action function
 displays and leaves selection to its caller -- `pop-to-buffer' selects the
 window anyway, so the paths that want focus still get it."
   (unless (and (cdr (assq 'inhibit-same-window alist))
-               (eq (window-buffer (selected-window)) buffer))
+               (eq (window-buffer (selected-window)) buffer)
+               (window-dedicated-p (selected-window)))
     (let ((claude-code-ide-focus-on-open nil))
       (claude-code-ide--display-buffer-in-side-window buffer))))
 

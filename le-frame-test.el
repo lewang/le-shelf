@@ -162,12 +162,27 @@ Binds `calls' to a list the stub pushes its BUFFER argument onto."
        ,@body)))
 
 (ert-deftest le::frame-display-cc/declines-the-window-it-was-told-to-avoid ()
-  "With `inhibit-same-window' and BUFFER already selected, decline untouched."
+  "With `inhibit-same-window' and the Claude pane selected, decline untouched."
   (le::frame-test--with-buffer "*cci: proj*"
     (le::frame-test--with-delegate
       (set-window-buffer (selected-window) buf)
-      (should-not (le::frame-display-cc buf '((inhibit-same-window . t))))
-      (should-not calls))))
+      (unwind-protect
+          (progn
+            (set-window-dedicated-p (selected-window) t)
+            (should-not (le::frame-display-cc buf '((inhibit-same-window . t))))
+            (should-not calls))
+        (set-window-dedicated-p (selected-window) nil)))))
+
+(ert-deftest le::frame-display-cc/a-plain-window-showing-it-is-not-the-pane ()
+  "Consult's preview leaves a Claude buffer in an ordinary window.  Declining
+there would strand it in the left column on RET instead of routing it, so
+only a DEDICATED window showing BUFFER counts as the pane to avoid."
+  (le::frame-test--with-buffer "*cci: proj*"
+    (le::frame-test--with-delegate
+      (set-window-buffer (selected-window) buf)
+      (should (eq (le::frame-display-cc buf '((inhibit-same-window . t)))
+                  'the-cc-window))
+      (should (equal calls (list buf))))))
 
 (ert-deftest le::frame-display-cc/displays-when-the-buffer-is-elsewhere ()
   "`inhibit-same-window' bars only the SELECTED window, not the cc window."
