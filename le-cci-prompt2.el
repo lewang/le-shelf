@@ -65,7 +65,6 @@
 ;;; Code:
 
 (require 'org-src)
-(require 'le-ide)                        ; le::ide-hostable-window
 (require 'le-cci-prompt2-core)
 (require 'le-cci-prompt2-mention)
 (require 'le-cci-prompt2-log)
@@ -87,22 +86,8 @@ optionally keeping it as ABANDONED; M-p/M-n recall earlier prompts
 
 With prefix argument FORCE-CHOOSE, prompt for a CCI session and save
 the choice as a buffer-local override.  INITIAL-TEXT, if non-nil,
-seeds the draft.  Returns the edit buffer.
-
-Signals a `user-error' when no window in the selected frame can host the edit
-buffer -- see `le::cci-prompt2--inhibit-window-guard'."
+seeds the draft.  Returns the edit buffer."
   (interactive "P")
-  ;; Refuse before ANY side effect.  With no hostable window `display-buffer'
-  ;; falls through to `display-buffer-pop-up-frame', and a new frame appearing
-  ;; mid-command strands the transient that invoked us: its teardown never
-  ;; cleans the original frame, whose keymap then eats every key.  This must
-  ;; precede the save-buffer prompt below and, above all,
-  ;; `le::cci-prompt2--insert-heading' — a refusal any later would leave a
-  ;; stray EDITING heading in the prompt log.
-  (unless (or le::cci-prompt2--inhibit-window-guard
-              (le::ide-hostable-window))
-    (user-error "No window here can host the prompt editor -- \
-this frame holds only dedicated/side windows; split it or use another frame"))
   ;; Offer to save the source buffer BEFORE any capture prompt — notably the
   ;; "Subject heading:" ancestor picker in
   ;; `le::cci-prompt2--capture-point-subject'.  We persist often, so the
