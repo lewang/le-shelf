@@ -98,6 +98,17 @@ buffers."
   (when-let* ((session (claude-code-ide--buffer-session cci-buf)))
     (claude-code-ide-mcp-session-project-dir session)))
 
+(defun le::cci-prompt2--cci-label (cci-buf)
+  "Return the user-facing label of the CCI session CCI-BUF runs.
+\"proj\" or \"proj:instance\", the same label the session picker shows,
+so a project running several instances names each one.  Read from the
+buffer's session backpointer: `default-directory' is not authoritative
+in a terminal buffer, and every instance of a project shares it anyway.
+Falls back to the buffer's own name when it carries no session."
+  (if-let* ((session (claude-code-ide--buffer-session cci-buf)))
+      (claude-code-ide--session-display-name session)
+    (buffer-name cci-buf)))
+
 (defun le::cci-prompt2--buffer-cci-session ()
   "Return the CCI session mapped from the current buffer's directory.
 Resolution is by `default-directory' / project, matching
