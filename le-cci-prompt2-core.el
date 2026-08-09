@@ -67,11 +67,14 @@ returning to the draft ends a navigation, not the chosen scope.")
 (defvar-local le::cci-prompt2--st nil
   "Prompt edit buffer state, a `le::cci-prompt2--state' struct.")
 
-(defun le::cci-prompt2--header-line (cci-name siblings)
+(defun le::cci-prompt2--header-line (cci-name siblings scopable)
   "Return the default header line for CCI-NAME's prompt edit buffer.
-SIBLINGS is the number of other EDITING headings at open time."
-  (format " Prompt for %s -- %d other EDITING    (C-c ' send, C-c C-k cancel, M-p/M-n history)"
-          cci-name siblings))
+SIBLINGS is the number of other EDITING headings at open time.
+SCOPABLE says whether history can be scoped to this instance -- the
+C-c C-s hint is offered only then, since an instance that declared no
+conversation has nothing to narrow to and the key refuses."
+  (format " Prompt for %s -- %d other EDITING    (C-c ' send, C-c C-k cancel, M-p/M-n history%s)"
+          cci-name siblings (if scopable ", C-c C-s scope" "")))
 
 ;;;; Target CCI session resolution
 

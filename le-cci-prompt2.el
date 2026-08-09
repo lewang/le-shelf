@@ -155,7 +155,8 @@ seeds the draft.  Returns the edit buffer."
         (setq edit-buf (current-buffer)))
       (with-current-buffer edit-buf
         (setq default-directory root)
-        (let ((hdr (le::cci-prompt2--header-line (buffer-name cci-buf) siblings)))
+        (let ((hdr (le::cci-prompt2--header-line (buffer-name cci-buf) siblings
+                                                 (and session t))))
           (setq le::cci-prompt2--st
                 (make-le::cci-prompt2--state
                  :cci-buffer cci-buf
