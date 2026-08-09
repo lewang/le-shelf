@@ -42,7 +42,12 @@
 ;; recallable too.  A prompt committed here lands in both stores; the
 ;; merge drops the CLI twin when its timestamp falls within seconds
 ;; of the heading's COMMITTED flip -- which is why the LOGBOOK stamps
-;; carry second precision.  `yank-media' pastes a clipboard image as
+;; carry second precision.  Both stores are project-wide and a project
+;; runs several instances, so the merged list is then narrowed to the
+;; conversations the target terminal has been on (`le-cci-session-ids';
+;; each heading records its own in a CCI_SESSION property and names its
+;; instance in the headline).  C-c C-s widens to the whole project and
+;; back.  `yank-media' pastes a clipboard image as
 ;; a denote attachment beside the log file (<ts>--screenshot.png):
 ;; the prompt text gets a plain "@<path>" mention the CLI resolves at
 ;; submit, and the log heading a [[denote:<ts>]] line after its
@@ -131,8 +136,12 @@ seeds the draft.  Returns the edit buffer."
            (subject (le::cci-prompt2--extract-subject (car content)))
            (path (le::cci-prompt2--log-file root))
            (file-buf (find-file-noselect path))
+           (label (le::cci-prompt2--cci-label cci-buf))
+           ;; The head of the instance's list is the conversation it is on
+           ;; now -- the one this prompt is being written for.
+           (session (car (le::cci-prompt2--cci-session-uuids cci-buf)))
            (inserted (le::cci-prompt2--insert-heading
-                      file-buf subject (car content)))
+                      file-buf subject (car content) label session))
            (id (car inserted))
            (body-pos (cdr inserted))
            (siblings (le::cci-prompt2--count-editing-siblings file-buf id))
@@ -140,8 +149,7 @@ seeds the draft.  Returns the edit buffer."
       (with-current-buffer file-buf
         (goto-char body-pos)
         (let ((org-src-window-setup 'other-window))
-          (org-edit-src-code nil (format "*cci-prompt2: %s*"
-                                         (le::cci-prompt2--cci-label cci-buf))))
+          (org-edit-src-code nil (format "*cci-prompt2: %s*" label)))
         ;; `org-edit-src-code' pops to the edit buffer, making it current
         ;; for the rest of this body.
         (setq edit-buf (current-buffer)))

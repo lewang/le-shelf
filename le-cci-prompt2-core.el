@@ -22,6 +22,7 @@
 (require 'org)
 (require 'org-src)
 (require 'denote)
+(require 'le-cci-session-ids)
 (require 'le-denote)
 (require 'w)
 
@@ -34,6 +35,7 @@
 (declare-function claude-code-ide-mcp-session-project-dir "claude-code-ide-mcp" (session))
 (declare-function le::cci-prompt2-history-previous "le-cci-prompt2-history")
 (declare-function le::cci-prompt2-history-next "le-cci-prompt2-history")
+(declare-function le::cci-prompt2-history-toggle-scope "le-cci-prompt2-history")
 (declare-function le::cci-prompt2-commit "le-cci-prompt2-commit")
 (declare-function le::cci-prompt2-cancel "le-cci-prompt2-commit")
 
@@ -53,8 +55,12 @@ heading, e.g. \"[2026-07-14 Tue 17:47:45]\" -- its EDITING flip time, stable
 for the whole edit session (the headline only changes again at the terminal
 flip, after which nothing looks it up).")
   (file-path nil :documentation "Path of the log file the heading lives in.")
-  (hist-entries nil :documentation "History plists (:id :state :text :ts), newest first; nil when not navigating.")
+  (hist-entries nil :documentation "History plists (:id :state :text :ts :session), newest first; nil when not navigating.")
   (hist-position nil :documentation "Current index into hist-entries, or nil.")
+  (hist-scope 'session :documentation "History scope: `session' (only the
+target instance's prompts) or `project' (every instance's).  Toggled by
+`le::cci-prompt2-history-toggle-scope' and sticky for the edit session --
+returning to the draft ends a navigation, not the chosen scope.")
   (hist-saved-input nil :documentation "Draft text stashed before history navigation.")
   (header-line-default nil :documentation "Default header line, restored after history navigation."))
 
@@ -108,6 +114,15 @@ Falls back to the buffer's own name when it carries no session."
   (if-let* ((session (claude-code-ide--buffer-session cci-buf)))
       (claude-code-ide--session-display-name session)
     (buffer-name cci-buf)))
+
+(defun le::cci-prompt2--cci-session-uuids (cci-buf)
+  "Return the CLI conversation uuids CCI-BUF's instance has been on.
+Newest first, so the head is the conversation it is on now; nil for an
+instance that never declared one -- one started before the SessionStart
+hook shipped, or one whose declaration could not reach Emacs.  These are
+the uuids `~/.claude/history.jsonl' records as `sessionId', which is what
+makes an instance's prompts separable from its siblings'."
+  (le::cci-session-ids-for-buffer cci-buf))
 
 (defun le::cci-prompt2--buffer-cci-session ()
   "Return the CCI session mapped from the current buffer's directory.
@@ -265,9 +280,15 @@ C-x C-s or commit, as always)."
     (insert "@" (file-relative-name path root) " ")))
 
 (defvar-keymap le::cci-prompt2-mode-map
-  :doc "Keymap for `le::cci-prompt2-mode'."
+  :doc "Keymap for `le::cci-prompt2-mode'.
+C-c C-s shadows org-mode's `org-schedule', which has no meaning in a
+prompt draft; being the derived mode's own map, it wins over the
+inherited `org-mode-map' with no `minor-mode-overriding-map-alist'
+dance -- `org-src-mode-map' does not claim the key (unlike the exit
+bindings in `le::cci-prompt2--edit-map')."
   "M-p" #'le::cci-prompt2-history-previous
-  "M-n" #'le::cci-prompt2-history-next)
+  "M-n" #'le::cci-prompt2-history-next
+  "C-c C-s" #'le::cci-prompt2-history-toggle-scope)
 
 (define-derived-mode le::cci-prompt2-mode org-mode "CCI-Prompt2"
   "Major mode for composing Claude Code prompts in org src blocks.
@@ -276,7 +297,9 @@ The block language `le::cci-prompt2' resolves here via
 picks this mode with no `org-src-lang-modes' entry.  C-c \\=' commits
 \(sends the prompt), C-c C-k cancels;
 \\[le::cci-prompt2-history-previous]/\\[le::cci-prompt2-history-next] \
-browse earlier prompts (log file merged with CLI history).
+browse earlier prompts (log file merged with CLI history), scoped to the
+target instance; \\[le::cci-prompt2-history-toggle-scope] widens that to
+the whole project and back.
 \\[yank-media] pastes a clipboard image as a denote attachment beside
 the log file and @-mentions it in the prompt."
   ;; Same TYPES key as org's own registration, so this *replaces* the

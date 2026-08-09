@@ -163,14 +163,56 @@ used to require."
   (when (string-match "\\`re: \\(.+\\)$" text)
     (string-trim (match-string 1 text))))
 
-(defun le::cci-prompt2--insert-heading (file-buf subject text)
+;;;; Headline composition
+
+(defconst le::cci-prompt2--session-property "CCI_SESSION"
+  "Property holding the CLI conversation uuid a prompt was composed for.
+The filter key behind session-scoped M-p/M-n: it is what
+`~/.claude/history.jsonl' records as `sessionId', so it scopes the org
+half of the history exactly as it scopes the CLI half.  A property
+rather than headline text because the uuid is machine data -- the
+headline carries the instance's readable label instead.")
+
+(defconst le::cci-prompt2--headline-label-re
+  "\\`\\[[^]\n]+\\] (\\([^)\n]+\\))"
+  "Matches the instance label in a prompt headline; group 1 is the label.
+Anchored past the leading bracketed stamp, so a \"re: SUBJECT\" tail that
+happens to contain parens cannot be mistaken for one.")
+
+(defun le::cci-prompt2--headline (id label subject)
+  "Return the headline text for a prompt heading.
+ID is its bracketed stamp, LABEL the readable name of the CCI instance
+the prompt targets (\"proj\" or \"proj:instance\"), SUBJECT its \"re:\"
+tail; LABEL and SUBJECT are each omitted when nil, so a heading with
+neither is just its stamp, as before instances were recorded."
+  (concat id
+          (if label (format " (%s)" label) "")
+          (if subject (format " re: %s" (le::org-codepath-escape subject)) "")))
+
+(defun le::cci-prompt2--headline-label (headline)
+  "Return the instance label HEADLINE carries, or nil.
+HEADLINE is the title without its TODO keyword.  Reading the label back
+out is how a headline rewrite preserves it without threading the label
+through the edit session -- and it keeps a hand-edited label."
+  (when (string-match le::cci-prompt2--headline-label-re headline)
+    (match-string 1 headline)))
+
+(defun le::cci-prompt2--insert-heading (file-buf subject text label session)
   "Append a new EDITING heading to FILE-BUF and save the file.
 The headline's title is the bracketed stamp of its own EDITING flip,
 read back via `le::cci-prompt2--heading-flip-stamp' from the LOGBOOK
 line `org-todo' just wrote, so headline time and latest state change
 are identical by construction.  That stamp is also the heading's id
-for the rest of the edit session.  SUBJECT, when non-nil, follows it
-as \"re: SUBJECT\".
+for the rest of the edit session.  LABEL, the readable name of the CCI
+instance this prompt targets, follows it in parens, and SUBJECT as
+\"re: SUBJECT\"; both are optional.
+SESSION, when non-nil, is the CLI conversation uuid that instance is
+on, stored as the `le::cci-prompt2--session-property' property -- the
+key session-scoped M-p/M-n filters on.  It is recorded now rather than
+at commit because this heading belongs to the conversation the prompt
+was composed for, even if a /clear moves the terminal on mid-draft.
+A nil SESSION (an instance that never declared one) leaves the heading
+attributable to no instance, hence visible only at project scope.
 The heading is inserted without a keyword and put into EDITING via
 `org-todo' with logging inhibited; the LOGBOOK line is written by
 `le::cci-prompt2--insert-state-line' (see it for why org's own note
@@ -211,7 +253,9 @@ position of the block body's start."
                     ;; if it is malformed; stamp "now" as a safety net.
                     (format-time-string
                      le::cci-prompt2--state-stamp-format))))
-        (org-edit-headline (if subject (format "%s re: %s" id (le::org-codepath-escape subject)) id))
+        (org-edit-headline (le::cci-prompt2--headline id label subject))
+        (when session
+          (org-entry-put (point) le::cci-prompt2--session-property session))
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
         (insert "#+begin_src le::cci-prompt2 -i\n")
@@ -254,9 +298,13 @@ ends up on the heading; point is unchanged otherwise."
 
 (defun le::cci-prompt2--set-heading-subject (id subject)
   "Refresh the headline at point to ID plus \"re: SUBJECT\" when non-nil.
+The instance label is carried over from the headline being replaced, so
+the rewrite keeps it without the edit session having to hold on to it.
 `org-edit-headline' rewrites only the title, leaving the TODO keyword
 alone."
-  (org-edit-headline (if subject (format "%s re: %s" id (le::org-codepath-escape subject)) id)))
+  (let ((label (le::cci-prompt2--headline-label
+                (substring-no-properties (org-get-heading t t t t)))))
+    (org-edit-headline (le::cci-prompt2--headline id label subject))))
 
 (defun le::cci-prompt2--move-heading-to-final-zone ()
   "Move the terminal heading at point to the end of the final-state zone.

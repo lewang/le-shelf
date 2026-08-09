@@ -25,13 +25,17 @@
 ;; where a bare placeholder reads as a legitimate prompt.
 ;;
 ;; Separate from `le-cci-prompt2-history' because the parsing here needs
-;; nothing but cl-lib, subr-x and the built-in JSON reader, while the
-;; navigation side pulls in org, denote and w -- so this half is
-;; testable in batch.
+;; nothing but cl-lib, seq, subr-x and the built-in JSON reader, while
+;; the navigation side pulls in org, denote and w -- so this half is
+;; testable in batch.  `le::cci-prompt2--entries-for-sessions' lives
+;; here for the same reason: it is pure, it operates on the entry plists
+;; minted here, and both halves of the merged history carry the :session
+;; it filters on.
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 
 (defvar le::cci-prompt2--claude-history-file "~/.claude/history.jsonl"
@@ -245,11 +249,13 @@ expanded or explicitly marked, none left bare."
 
 (defun le::cci-prompt2--claude-history-entries (root)
   "Collect project ROOT's prompts from Claude Code's own history.
-Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS), newest
-first, TS in float epoch seconds.  TEXT carries its paste placeholders
-expanded from the three sources `le::cci-prompt2--paste-lookup'
-describes, or marked unrecoverable; an entry whose text is empty is
-dropped.
+Returns plists (:id nil :state \"CLI\" :text TEXT :ts TS :session
+SESSION), newest first, TS in float epoch seconds.  TEXT carries its
+paste placeholders expanded from the three sources
+`le::cci-prompt2--paste-lookup' describes, or marked unrecoverable; an
+entry whose text is empty is dropped.  SESSION is the CLI's own
+conversation uuid, kept so the entry can be scoped to one Claude Code
+instance (see `le::cci-prompt2--entries-for-sessions').
 
 A borrowed payload can only come from the same session, and a session
 belongs to one project, so `le::cci-prompt2--claude-history-records'
@@ -265,9 +271,38 @@ prefiltering on ROOT never hides a candidate."
                     (le::cci-prompt2--paste-lookup record index)))))
         (unless (string-empty-p text)
           (push (list :id nil :state "CLI" :text text
-                      :ts (plist-get record :ts))
+                      :ts (plist-get record :ts)
+                      :session (plist-get record :session))
                 entries))))
     (nreverse entries)))
+
+;;;; Scoping entries to one Claude Code instance
+
+(defun le::cci-prompt2--entries-for-sessions (entries sessions)
+  "Return the ENTRIES whose :session is one of SESSIONS.
+SESSIONS is a list of the CLI's own conversation uuids -- what one
+Claude Code instance has been on, per `le::cci-session-ids-for-buffer'
+-- so this narrows a project-wide history to a single instance.
+
+An entry carrying no :session drops out: prompt-log headings written
+before the uuid was recorded are attributable to no instance, and
+guessing one would put a sibling's prompt in this instance's history.
+They stay reachable at project scope, which does not filter at all."
+  (seq-filter (lambda (entry)
+                (member (plist-get entry :session) sessions))
+              entries))
+
+(defun le::cci-prompt2--entry-position (entries entry)
+  "Return ENTRY's index in ENTRIES, or nil when it is absent.
+Matched on :ts and :text rather than :id: the two halves of the merged
+history mint different ids (the CLI half has none at all), and changing
+scope renumbers the list, so identity has to come from the prompt
+itself.  ENTRY nil is absent by definition."
+  (when entry
+    (seq-position entries entry
+                  (lambda (a b)
+                    (and (equal (plist-get a :ts) (plist-get b :ts))
+                         (equal (plist-get a :text) (plist-get b :text)))))))
 
 (provide 'le-cci-prompt2-paste)
 ;;; le-cci-prompt2-paste.el ends here

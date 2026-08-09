@@ -310,5 +310,57 @@ predates the entry that lost it -- a later one is a different paste."
                    "own borrowed\ntwo [paste #3 unrecoverable: 10 lines]"))
     (should-not (string-match-p "Pasted text #" text))))
 
+;;;; Scoping a project-wide history to one instance
+
+(defun le::cci-prompt2-paste-test--entry (session ts text)
+  "Return a history entry plist with SESSION, TS and TEXT."
+  (list :id nil :state "CLI" :text text :ts ts :session session))
+
+(ert-deftest le::cci-prompt2-paste-test-entries-for-sessions ()
+  "Only the target instance's conversations survive the narrowing."
+  (let ((entries (list (le::cci-prompt2-paste-test--entry "a" 300.0 "mine, now")
+                       (le::cci-prompt2-paste-test--entry "b" 200.0 "a sibling's")
+                       (le::cci-prompt2-paste-test--entry "a0" 100.0 "mine, before /clear"))))
+    ;; One instance owns many conversations -- /clear mints a fresh one in
+    ;; the same terminal, and both halves of its history stay in scope.
+    (should (equal (mapcar (lambda (e) (plist-get e :text))
+                           (le::cci-prompt2--entries-for-sessions entries '("a" "a0")))
+                   '("mine, now" "mine, before /clear")))
+    (should-not (le::cci-prompt2--entries-for-sessions entries '("unknown")))
+    (should-not (le::cci-prompt2--entries-for-sessions entries nil))))
+
+(ert-deftest le::cci-prompt2-paste-test-entries-for-sessions-drops-unattributed ()
+  "A heading written before instances were recorded belongs to none of them.
+Project scope is where it stays reachable; admitting it here would put a
+sibling's prompt in this instance's history."
+  (let ((entries (list (le::cci-prompt2-paste-test--entry "a" 300.0 "attributed")
+                       (le::cci-prompt2-paste-test--entry nil 200.0 "older heading"))))
+    (should (equal (mapcar (lambda (e) (plist-get e :text))
+                           (le::cci-prompt2--entries-for-sessions entries '("a")))
+                   '("attributed")))))
+
+(ert-deftest le::cci-prompt2-paste-test-entry-position ()
+  "The shown prompt is re-found across a scope change, by prompt not by index."
+  (let* ((mine (le::cci-prompt2-paste-test--entry "a" 300.0 "mine"))
+         (theirs (le::cci-prompt2-paste-test--entry "b" 200.0 "theirs"))
+         (widened (list mine theirs))
+         (narrowed (list mine)))
+    ;; Widening: same prompt, new index.
+    (should (equal (le::cci-prompt2--entry-position widened
+                                                    (le::cci-prompt2-paste-test--entry
+                                                     "b" 200.0 "theirs"))
+                   1))
+    (should (equal (le::cci-prompt2--entry-position narrowed mine) 0))
+    ;; Narrowing away the shown entry: absent, so the caller falls back.
+    (should-not (le::cci-prompt2--entry-position narrowed theirs))
+    (should-not (le::cci-prompt2--entry-position widened nil))))
+
+(ert-deftest le::cci-prompt2-paste-test-entry-position-ignores-id ()
+  "An org heading and its CLI twin are the same prompt despite differing ids."
+  (let ((org-entry (list :id "[2026-08-09 Sun 00:44:12]" :state "COMMITTED"
+                         :text "same" :ts 300.0 :session "a"))
+        (cli-entry (le::cci-prompt2-paste-test--entry "a" 300.0 "same")))
+    (should (equal (le::cci-prompt2--entry-position (list org-entry) cli-entry) 0))))
+
 (provide 'le-cci-prompt2-paste-test)
 ;;; le-cci-prompt2-paste-test.el ends here

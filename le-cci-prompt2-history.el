@@ -24,6 +24,7 @@
 (require 'org-src)
 (require 'org-duration)
 (require 'le-cci-prompt2-core)
+(require 'le-cci-prompt2-log)
 (require 'le-cci-prompt2-paste)
 
 ;;;; History navigation
@@ -91,7 +92,11 @@ cannot dedupe."
 
 (defun le::cci-prompt2--collect-entries ()
   "Collect entries from this edit buffer's log file.
-Returns plists (:id ID :state STATE :text TEXT :ts TS), newest first.
+Returns plists (:id ID :state STATE :text TEXT :ts TS :session
+SESSION), newest first.  SESSION is the CLI conversation the heading
+was composed for (its `le::cci-prompt2--session-property' property),
+nil for headings written before instances were recorded -- the key
+session-scoped history filters on.
 ID is the headline's bracketed stamp; TS is its parsed time -- the
 heading's most recent state change, since the headline mirrors the
 top LOGBOOK line (for a COMMITTED heading that flip time is the
@@ -132,7 +137,10 @@ fork an in-progress draft."
                   (when-let* ((text (le::cci-prompt2--subtree-block-text
                                      heading-beg subtree-end))
                               (ts (le::cci-prompt2--stamp-time id)))
-                    (push (list :id id :state state :text text :ts ts)
+                    (push (list :id id :state state :text text :ts ts
+                                :session (org-entry-get
+                                          heading-beg
+                                          le::cci-prompt2--session-property))
                           entries))))
                 (goto-char subtree-end))))))
       (when (> skipped 0)
@@ -145,29 +153,72 @@ A prompt committed from the edit buffer also lands in Claude's own
 history: a CLI entry with `equal' text whose timestamp falls within
 `le::cci-prompt2--dedup-window' of an org entry's COMMITTED flip is
 that same send -- drop it, the org entry wins.  The sort is stable,
-so same-:ts entries keep their source order."
+so same-:ts entries keep their source order.
+
+A twin also carries the conversation it was sent to, so an org entry
+that has none inherits it.  Without that, dropping the twin would lose
+the only attribution the pair had and hide the prompt from session
+scope entirely -- which is every heading written before headings
+recorded their instance.  Being the same send, the twin's session is
+that heading's by construction.  The inheritance is an in-place
+`plist-put': both collectors always emit :session, nil or not, so the
+key is there to set."
   (dolist (org-entry org-entries)
     (when (equal (plist-get org-entry :state) "COMMITTED")
       (let ((text (string-trim (plist-get org-entry :text)))
-            (ts (plist-get org-entry :ts)))
+            (ts (plist-get org-entry :ts))
+            twin)
         (setq cli-entries
               (cl-delete-if
                (lambda (cli-entry)
-                 (and (equal (plist-get cli-entry :text) text)
-                      (<= (abs (- (plist-get cli-entry :ts) ts))
-                          le::cci-prompt2--dedup-window)))
-               cli-entries)))))
+                 (when (and (equal (plist-get cli-entry :text) text)
+                            (<= (abs (- (plist-get cli-entry :ts) ts))
+                                le::cci-prompt2--dedup-window))
+                   (setq twin cli-entry)
+                   t))
+               cli-entries))
+        (when (and twin (null (plist-get org-entry :session)))
+          (plist-put org-entry :session (plist-get twin :session))))))
   (sort (append org-entries cli-entries)
         (lambda (a b) (> (plist-get a :ts) (plist-get b :ts)))))
 
-(defun le::cci-prompt2--collect-history ()
-  "Return the full M-p/M-n history for this edit buffer:
-org-file entries merged with Claude's own history for the project,
-deduped, newest first."
-  (le::cci-prompt2--merge-history
-   (le::cci-prompt2--collect-entries)
-   (le::cci-prompt2--claude-history-entries
-    (le::cci-prompt2--state-root le::cci-prompt2--st))))
+;;;; Scope: this instance, or the whole project
+
+(defun le::cci-prompt2--target-session-uuids (st)
+  "Return the CLI conversation uuids of ST's target instance, or nil.
+Read live rather than captured at open: a /clear mid-edit mints a fresh
+conversation in that terminal, and the draft should still recall what
+the terminal did before it."
+  (let ((buf (le::cci-prompt2--state-cci-buffer st)))
+    (and (buffer-live-p buf)
+         (le::cci-prompt2--cci-session-uuids buf))))
+
+(defun le::cci-prompt2--scope-description (scope uuids)
+  "Return the header-line phrase describing history SCOPE.
+UUIDS is what the target instance has declared; with none there is
+nothing to scope to, so SCOPE is moot and the phrase says why rather
+than offering a toggle that would not change the list."
+  (cond ((null uuids) "(project -- no session recorded)")
+        ((eq scope 'session) "(session -- C-c C-s widens)")
+        (t "(project -- C-c C-s narrows)")))
+
+(defun le::cci-prompt2--collect-history (st)
+  "Return the M-p/M-n history for ST's edit buffer, newest first.
+Org-file entries merged with Claude's own history for the project,
+deduped, then narrowed to the target instance's conversations when
+ST's scope is `session'.  An instance that declared none is not
+narrowable, so its history stays project-wide.
+
+The narrowing happens after the merge, never before: the dedup that
+drops a committed prompt's CLI twin has to see both stores whole."
+  (let ((entries (le::cci-prompt2--merge-history
+                  (le::cci-prompt2--collect-entries)
+                  (le::cci-prompt2--claude-history-entries
+                   (le::cci-prompt2--state-root st))))
+        (uuids (le::cci-prompt2--target-session-uuids st)))
+    (if (and uuids (eq (le::cci-prompt2--state-hist-scope st) 'session))
+        (le::cci-prompt2--entries-for-sessions entries uuids)
+      entries)))
 
 (defun le::cci-prompt2--age-string (ts)
   "Return a relative age like \"2:46 ago\" for TS, float epoch seconds.
@@ -188,23 +239,29 @@ Sub-minute ages read \"less than 1 min ago\"; longer ages go through
     (erase-buffer)
     (insert (plist-get entry :text))
     (setq header-line-format
-          (format " History [%d/%d] %s %s    (M-p older, M-n newer)"
+          (format " History [%d/%d] %s %s    (M-p older, M-n newer)    %s"
                   (1+ pos) (length entries)
                   (plist-get entry :state)
-                  (le::cci-prompt2--age-string (plist-get entry :ts))))))
+                  (le::cci-prompt2--age-string (plist-get entry :ts))
+                  (le::cci-prompt2--scope-description
+                   (le::cci-prompt2--state-hist-scope st)
+                   (le::cci-prompt2--target-session-uuids st))))))
 
 (defun le::cci-prompt2-history-previous ()
   "Show the previous (older) prompt from the merged history
-\(log file + Claude's own ~/.claude/history.jsonl).
+\(log file + Claude's own ~/.claude/history.jsonl), scoped to the
+instance this draft targets.
 The first invocation stashes the in-progress draft;
-\\[le::cci-prompt2-history-next] past the newest entry restores it."
+\\[le::cci-prompt2-history-next] past the newest entry restores it, and
+\\[le::cci-prompt2-history-toggle-scope] widens the list to every
+instance in the project."
   (interactive)
   (let ((st le::cci-prompt2--st))
     (unless (and st (org-src-edit-buffer-p))
       (user-error "Not in a CCI prompt edit buffer"))
     (cond
      ((null (le::cci-prompt2--state-hist-position st))
-      (let ((entries (le::cci-prompt2--collect-history)))
+      (let ((entries (le::cci-prompt2--collect-history st)))
         (if (null entries)
             (message "No history")
           (setf (le::cci-prompt2--state-hist-entries st) entries)
@@ -240,6 +297,56 @@ Returning to the draft clears the collected entries, so the next
      (t
       (cl-decf (le::cci-prompt2--state-hist-position st))
       (le::cci-prompt2--show-history-entry)))))
+
+(defun le::cci-prompt2--rescope-history (st)
+  "Re-collect ST's history under its current scope, keeping the shown entry.
+Returns non-nil when the new scope has any prompts; nil leaves the
+navigation untouched, for the caller to undo its scope change with.
+
+The entry on screen is looked up in the new list rather than the
+position being kept: scoping renumbers everything, so an index means
+nothing across the change.  A narrowing that drops the shown entry --
+it belonged to a sibling instance -- lands on the newest instead."
+  (let* ((current (nth (le::cci-prompt2--state-hist-position st)
+                       (le::cci-prompt2--state-hist-entries st)))
+         (entries (le::cci-prompt2--collect-history st)))
+    (when entries
+      (setf (le::cci-prompt2--state-hist-entries st) entries)
+      (setf (le::cci-prompt2--state-hist-position st)
+            (or (le::cci-prompt2--entry-position entries current) 0))
+      (le::cci-prompt2--show-history-entry)
+      t)))
+
+(defun le::cci-prompt2-history-toggle-scope ()
+  "Toggle M-p/M-n between this instance's prompts and the project's.
+A project runs several Claude Code instances and they share one
+prompt-log file and one project in Claude's own history, so the
+unscoped list is every sibling's prompts too.  Session scope -- the
+default -- keeps to the conversations the target terminal has been on.
+
+The scope sticks for the rest of the edit session, including across a
+return to the draft.  Mid-navigation it re-collects at once, keeping
+the prompt on screen where it can.  Refuses when the target instance
+has declared no conversation \(one started before the SessionStart
+hook shipped): there is nothing to narrow to, and its history is
+already project-wide."
+  (interactive)
+  (let ((st le::cci-prompt2--st))
+    (unless (and st (org-src-edit-buffer-p))
+      (user-error "Not in a CCI prompt edit buffer"))
+    (unless (le::cci-prompt2--target-session-uuids st)
+      (user-error "No conversation recorded for this instance; history is project-wide"))
+    (let ((previous (le::cci-prompt2--state-hist-scope st)))
+      (setf (le::cci-prompt2--state-hist-scope st)
+            (if (eq previous 'session) 'project 'session))
+      (cond
+       ((null (le::cci-prompt2--state-hist-position st))
+        (message "Prompt history scope: %s"
+                 (le::cci-prompt2--state-hist-scope st)))
+       ((not (le::cci-prompt2--rescope-history st))
+        (message "No prompts at %s scope"
+                 (le::cci-prompt2--state-hist-scope st))
+        (setf (le::cci-prompt2--state-hist-scope st) previous))))))
 
 (provide 'le-cci-prompt2-history)
 ;;; le-cci-prompt2-history.el ends here
