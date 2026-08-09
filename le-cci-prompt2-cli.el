@@ -145,13 +145,14 @@ heading, just a `read-string' and a send.  Resolves the target the
 same way as \"i\", via `le::cci-prompt2--resolve-cci-target' --
 FORCE-CHOOSE (the prefix arg) always offers the session picker.
 The target is resolved first so the minibuffer prompt can name the
-project root it will send to (the root directory's last component,
-e.g. \"foo\" for ~/src/foo).  Aborts on an empty prompt."
+session it will send to -- the instance, not just its project, since
+a project can be running several (see `le::cci-prompt2--cci-label').
+Aborts on an empty prompt."
   (interactive "P")
   (let* ((target (le::cci-prompt2--resolve-cci-target force-choose))
          (root (car target))
          (cci-buf (cdr target))
-         (name (propertize (file-name-nondirectory (directory-file-name root))
+         (name (propertize (le::cci-prompt2--cci-label cci-buf)
                            'face 'font-lock-keyword-face))
          (text (read-string (format "Claude prompt (%s): " name))))
     (unless (string-empty-p text)
