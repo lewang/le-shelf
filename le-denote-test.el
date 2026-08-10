@@ -27,7 +27,7 @@ keyword at all, which would read a CANCELLED heading as a non-task."
   (declare (indent 1) (debug t))
   `(with-temp-buffer
      (delay-mode-hooks (org-mode))
-     (insert "#+TODO: REFINING TODO DOING WAITING HOLD | DONE CANCELLED\n")
+     (insert "#+TODO: REFINING REFINE-INTERVIEWING TODO DOING VERIFYING PR WAITING HOLD | DONE CANCELLED\n")
      (insert ,text)
      (org-set-regexps-and-options)
      (goto-char (point-min))
@@ -354,6 +354,42 @@ empty line behind."
   "The gaps left by cut children collapse to a single blank line."
   (should (equal (le::denote-export--promote "* TODO foo=1\nbody\n\n\n\nmore\n")
                  "* TODO foo=1\nbody\n\nmore\n")))
+
+;;; Heading regexps: the keyword is org's own regexp-opt, never a character class
+
+(ert-deftest le::denote--heading-regexp/matches-a-dashed-keyword ()
+  "A keyword containing a dash anchors a heading; `[A-Z]+' stopped at the dash."
+  (le-denote-test--with-org
+      "* REFINE-INTERVIEWING foo=1 alpha\n"
+    (should (re-search-forward (le::denote--heading-regexp "foo=1") nil t))))
+
+(ert-deftest le::denote--heading-regexp/matches-every-declared-keyword ()
+  "Every keyword the buffer declares anchors a heading."
+  (dolist (kw '("REFINING" "REFINE-INTERVIEWING" "TODO" "DOING" "VERIFYING"
+                "PR" "WAITING" "HOLD" "DONE" "CANCELLED"))
+    (le-denote-test--with-org
+        (format "* %s foo=1 alpha\n" kw)
+      (should (re-search-forward (le::denote--heading-regexp "foo=1") nil t)))))
+
+(ert-deftest le::denote--heading-regexp/rejects-a-non-keyword ()
+  "A first word that is not a declared keyword is not a task heading."
+  (le-denote-test--with-org
+      "* NOTASTATE foo=1 alpha\n"
+    (should-not (re-search-forward (le::denote--heading-regexp "foo=1") nil t))))
+
+(ert-deftest le::denote--heading-regexp/code-ends-at-a-boundary ()
+  "A longer id that merely starts with CODE does not match."
+  (le-denote-test--with-org
+      "* TODO foo=1=2 alpha\n"
+    (should-not (re-search-forward (le::denote--heading-regexp "foo=1") nil t))))
+
+(ert-deftest le::denote--state-regexp/group-1-is-the-dashed-keyword ()
+  "Group 1 is the keyword itself -- what a state flip replaces in place."
+  (le-denote-test--with-org
+      "* REFINE-INTERVIEWING foo=1 alpha\n"
+    (goto-char (le-denote-test--bol "foo=1"))
+    (should (looking-at (le::denote--state-regexp)))
+    (should (equal (match-string 1) "REFINE-INTERVIEWING"))))
 
 (provide 'le-denote-test)
 ;;; le-denote-test.el ends here

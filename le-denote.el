@@ -85,6 +85,22 @@ project (the live buffer may belong to a different one)."
     (make-directory dir t)
     (denote-format-file-name dir id keywords title (or ext ".md") signature)))
 
+(defun le::denote--state-regexp ()
+  "Regexp matching an org-tasks heading up to and including its state keyword.
+The keyword is matched by `org-todo-regexp' -- org's own `regexp-opt' of the
+buffer's `org-todo-keywords-1' -- and NOT by a character class such as
+`[A-Z]+', which stops at the first dash and so silently fails to match a
+heading whose keyword contains one.  Group 1 is the keyword, as org supplies
+it.  Call only where `org-mode' has set the regexp buffer-locally."
+  (concat "^\\*+[ \t]+" org-todo-regexp "[ \t]"))
+
+(defun le::denote--heading-regexp (code)
+  "Regexp matching the org-tasks heading whose id token is CODE.
+Anchors `le::denote--state-regexp' to CODE, which must be followed by
+whitespace or end of line so a heading is never matched by a longer id that
+merely starts with it."
+  (concat (le::denote--state-regexp) "+" (regexp-quote code) "\\(?:[ \t]\\|$\\)"))
+
 (defun le::denote--logbook-indent (text)
   "Indent every line of TEXT by two spaces for a LOGBOOK note continuation."
   (mapconcat (lambda (l) (concat "  " l)) (split-string text "\n") "\n"))
@@ -115,16 +131,14 @@ mark it machine-authored."
     (insert-file-contents file)
     (delay-mode-hooks (org-mode))
     (goto-char (point-min))
-    (unless (re-search-forward
-             (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote code) "\\(?:[ \t]\\|$\\)")
-             nil t)
+    (unless (re-search-forward (le::denote--heading-regexp code) nil t)
       (error "No task heading for code %s in %s" code file))
     (beginning-of-line)
     (let* ((org-log-into-drawer "LOGBOOK")
            (ts (format-time-string "[%Y-%m-%d %a %H:%M]"))
            (old-state
             (when (equal kind "state")
-              (unless (looking-at "^\\*+[ \t]+\\([A-Z]+\\)[ \t]")
+              (unless (looking-at (le::denote--state-regexp))
                 (error "Heading for %s has no state keyword" code))
               (prog1 (match-string 1)
                 (replace-match to-state t t nil 1))))
@@ -176,9 +190,7 @@ any, is never touched."
     (if (and anchor (not (string-empty-p anchor)))
         (progn
           (goto-char (point-min))
-          (unless (re-search-forward
-                   (concat "^\\*+[ \t]+[A-Z]+[ \t]+" (regexp-quote anchor) "\\(?:[ \t]\\|$\\)")
-                   nil t)
+          (unless (re-search-forward (le::denote--heading-regexp anchor) nil t)
             (error "No task heading for anchor %s in %s" anchor file))
           (org-back-to-heading t)
           (org-end-of-subtree t t))
