@@ -61,26 +61,29 @@ scope the scan.  DATA is written verbatim (`no-conversion')."
     (cons path id)))
 
 ;;;###autoload
-(defun le::denote-plan-path (dir title &optional keywords signature)
-  "Return the denote path for a plan named TITLE in DIR; write NOTHING.
-This is the pure name-oracle half of the `dnc plan' write verb: `dnc'
-locates the project's denote silo, passes DIR (the absolute `plan/'
-subdirectory) here, gets back a sluggified
-`<id>==<signature>--<title>__<kw>.md' path, and authors the file body
-itself -- the body never crosses into Emacs.
+(defun le::denote-plan-path (dir title &optional keywords signature ext)
+  "Return the denote path for an artifact named TITLE in DIR; write NOTHING.
+This is the pure name-oracle half of `dnc''s `artifact' write verb: `dnc'
+locates the project's denote silo, passes DIR (the absolute `plan/', `pr/'
+or `taskdata/file/' subdirectory) here, gets back a sluggified
+`<id>==<signature>--<title>__<kw><ext>' path, and writes the file itself
+-- its contents never cross into Emacs, which is what keeps a binary
+artifact safe.
 DIR is created if absent.  KEYWORDS is a list of keyword strings (nil for
-none).  SIGNATURE is the plan's task `code=path' (nil for none), filling
-denote's signature slot so the plan file links back to its task -- the
-same slot `task/' files carry.  The minted identifier's used-id scan is
-scoped to the silo (DIR's parent) by `let'-binding `denote-directory', so
-ids stay unique there.  Passing DIR explicitly keeps naming independent of
-this session's ambient project (the live buffer may belong to a different
-one)."
+none).  SIGNATURE is the artifact's task `code=path' (nil for none), filling
+denote's signature slot so the file links back to its task -- the same slot
+`task/' files carry.  EXT is the file extension including its leading dot,
+defaulting to \".md\" for a markdown note; pass an attached file's own
+extension to name a non-markdown artifact, or the empty string for one that
+has none.  The minted identifier's used-id scan is scoped to the silo (DIR's
+parent) by `let'-binding `denote-directory', so ids stay unique there.
+Passing DIR explicitly keeps naming independent of this session's ambient
+project (the live buffer may belong to a different one)."
   (let* ((dir (file-name-as-directory (expand-file-name dir)))
          (denote-directory (file-name-directory (directory-file-name dir)))
          (id (funcall denote-get-identifier-function nil (current-time))))
     (make-directory dir t)
-    (denote-format-file-name dir id keywords title ".md" signature)))
+    (denote-format-file-name dir id keywords title (or ext ".md") signature)))
 
 (defun le::denote--logbook-indent (text)
   "Indent every line of TEXT by two spaces for a LOGBOOK note continuation."
