@@ -22,7 +22,7 @@
 ;; does its own two-sided referencing (an @-mention for the Claude CLI plus a
 ;; [[denote:<id>]] line in the log file); see le-cci-prompt2.el.
 ;;
-;; `le::denote-plan-path' is a pure NAME ORACLE for the `dnc' CLI: given a
+;; `le::denote-artifact-path' is a pure NAME ORACLE for the `dnc' CLI: given a
 ;; target directory it mints an id and returns the sluggified denote path,
 ;; writing nothing.  The CLI (which finds the silo itself) passes an absolute
 ;; directory so naming never depends on this session's ambient project; `dnc'
@@ -61,7 +61,7 @@ scope the scan.  DATA is written verbatim (`no-conversion')."
     (cons path id)))
 
 ;;;###autoload
-(defun le::denote-plan-path (dir title &optional keywords signature ext)
+(defun le::denote-artifact-path (dir title &optional keywords signature ext)
   "Return the denote path for an artifact named TITLE in DIR; write NOTHING.
 This is the pure name-oracle half of `dnc''s `artifact' write verb: `dnc'
 locates the project's denote silo, passes DIR (the absolute `plan/', `pr/'
