@@ -23,6 +23,7 @@
 (require 'org-src)
 (require 'denote)
 (require 'le-cci-session-ids)
+(require 'le-cci-task-sessions)
 (require 'le-denote)
 (require 'w)
 
@@ -62,7 +63,15 @@ target instance's prompts) or `project' (every instance's).  Toggled by
 `le::cci-prompt2-history-toggle-scope' and sticky for the edit session --
 returning to the draft ends a navigation, not the chosen scope.")
   (hist-saved-input nil :documentation "Draft text stashed before history navigation.")
-  (header-line-default nil :documentation "Default header line, restored after history navigation."))
+  (header-line-default nil :documentation "Default header line, restored after history navigation.")
+  (task-marker nil :documentation "Marker at the org task heading this prompt
+was composed for, or nil when it was composed from no task.  On a successful
+send the conversation is recorded there, so the next prompt about that task
+can find this same instance.")
+  (task-title nil :documentation "That heading's title as captured at compose
+time.  A marker can drift onto another heading between composing and sending;
+comparing the title is what catches it, so nothing is written to the wrong
+task."))
 
 (defvar-local le::cci-prompt2--st nil
   "Prompt edit buffer state, a `le::cci-prompt2--state' struct.")
@@ -181,12 +190,15 @@ are distinguishable -- which buffer names alone no longer guarantee."
                       nil t nil nil (car names))))
         (cdr (assoc chosen pairs))))))
 
-(defun le::cci-prompt2--resolve-cci-target (force-choose)
+(defun le::cci-prompt2--resolve-cci-target (force-choose &optional task-marker)
   "Resolve the target CCI buffer and its root directory.
 When FORCE-CHOOSE is non-nil, always prompt.  When the current
-buffer is itself a CCI session buffer, it is the target.
+buffer is itself a CCI session buffer, it is the target.  TASK-MARKER,
+when it points at a task heading that has recorded conversations, names
+the instance directly -- see `le-cci-task-sessions'.
 Returns (ROOT . CCI-BUFFER) or signals an error."
-  (let (session cci-buf)
+  (let ((task-head (and task-marker (le::cci-task-sessions-head task-marker)))
+        session cci-buf)
     (cond
      ;; C-u: always prompt and save
      (force-choose
@@ -199,6 +211,24 @@ Returns (ROOT . CCI-BUFFER) or signals an error."
      ;; distinguish two instances of one project anyway.
      ((claude-code-ide--buffer-session (current-buffer))
       (setq session (claude-code-ide--buffer-session (current-buffer))))
+     ;; The task's own record beats the saved override and the directory
+     ;; guess: it names the instance this task was last worked on, where
+     ;; both of those only name a project.  A task that was never prompted
+     ;; from has no head, this clause does not fire, and resolution behaves
+     ;; exactly as it did before.
+     (task-head
+      (let ((buf (le::cci-task-sessions--match
+                  task-head (le::cci-task-sessions--candidates))))
+        (setq session
+              (if buf
+                  (claude-code-ide--buffer-session buf)
+                ;; Recorded, but nothing live is on it.  Ask rather than
+                ;; falling back to the project MRU -- falling back to the
+                ;; heuristic this record exists to replace, right after
+                ;; admitting it cannot target, is the wrong move.
+                (message "Task's last conversation %s has no live instance -- choose one"
+                         (substring task-head 0 (min 8 (length task-head))))
+                (le::cci-prompt2--choose-cci-session)))))
      ;; Saved override still live?
      ((and le::cci-prompt2--target-cci-buffer
            (buffer-live-p le::cci-prompt2--target-cci-buffer))

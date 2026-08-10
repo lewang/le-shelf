@@ -116,7 +116,12 @@ seeds the draft.  Returns the edit buffer."
   (let* ((origin-window (selected-window))
          (region-ref (or (le::cci-prompt2--capture-region-ref)
                          (le::cci-prompt2--capture-point-subject)))
-         (target (le::cci-prompt2--resolve-cci-target force-choose))
+         ;; Read out of REGION-REF before the unsaved-file branch below drops
+         ;; it: a task with no file on disk still gets its conversation
+         ;; recorded, it just gets no @-mention.
+         (task-marker (plist-get region-ref :subject-marker))
+         (task-title (plist-get region-ref :subject))
+         (target (le::cci-prompt2--resolve-cci-target force-choose task-marker))
          (root (car target))
          (cci-buf (cdr target)))
     ;; Now the target root is known: build the on-disk file reference, or
@@ -164,7 +169,9 @@ seeds the draft.  Returns the edit buffer."
                  :root root
                  :heading-id id
                  :file-path path
-                 :header-line-default hdr))
+                 :header-line-default hdr
+                 :task-marker task-marker
+                 :task-title task-title))
           (setq header-line-format hdr))
         (goto-char (min (cdr content) (point-max))))
       edit-buf)))

@@ -23,6 +23,7 @@
 (require 'org-src)
 (require 'le-cci-prompt2-core)
 (require 'le-cci-prompt2-log)
+(require 'le-cci-task-sessions)
 
 (declare-function claude-code-ide-send-prompt "claude-code-ide" (&optional prompt session))
 (declare-function claude-code-ide--buffer-session "claude-code-ide" (&optional buffer))
@@ -47,10 +48,12 @@ focus is left where the exit put it."
 (defun le::cci-prompt2--edit-context ()
   "Validate the current buffer as a live prompt edit buffer and
 snapshot everything commit/cancel need: a plist of the state fields
-:cci-buf :root :id :origin-window, the trimmed draft
-:text, and :marker -- a fresh copy of the block-begin marker, taken
-now because org nils its own markers on exit.  The caller clears the
-copy when done."
+:cci-buf :root :id :origin-window :file-path :task-marker :task-title,
+the trimmed draft :text, and :log-marker -- a fresh copy of the
+block-begin marker, taken now because org nils its own markers on exit.
+The caller clears the copy when done.  Note the two markers name
+different things: :log-marker points into the prompt-log file at this
+draft's block, :task-marker at the org task heading the prompt is about."
   (let ((st le::cci-prompt2--st))
     (unless (and (derived-mode-p 'le::cci-prompt2-mode)
                  (org-src-edit-buffer-p)
@@ -62,8 +65,11 @@ copy when done."
           :root (le::cci-prompt2--state-root st)
           :id (le::cci-prompt2--state-heading-id st)
           :origin-window (le::cci-prompt2--state-origin-window st)
+          :file-path (le::cci-prompt2--state-file-path st)
+          :task-marker (le::cci-prompt2--state-task-marker st)
+          :task-title (le::cci-prompt2--state-task-title st)
           :text (string-trim (buffer-string))
-          :marker (copy-marker org-src--beg-marker))))
+          :log-marker (copy-marker org-src--beg-marker))))
 
 (defun le::cci-prompt2-commit ()
   "Send the draft to the CCI session and mark its heading COMMITTED.
@@ -75,9 +81,8 @@ send flips the state."
          (text (plist-get ctx :text))
          (cci-buf (plist-get ctx :cci-buf))
          (origin-window (plist-get ctx :origin-window))
-         (root (plist-get ctx :root))
          (id (plist-get ctx :id))
-         (mk (plist-get ctx :marker))
+         (mk (plist-get ctx :log-marker))
          (subject (le::cci-prompt2--extract-subject text)))
     (when (string-empty-p text)
       (set-marker mk nil)
@@ -103,21 +108,36 @@ send flips the state."
       ;; means that redisplay already shows the window you came from instead
       ;; of flashing through the log-file window this exit left selected.
       (le::cci-prompt2--restore-window origin-window)
+      ;; A dead target fails the send outright -- there is no sane instance to
+      ;; redirect to, and picking one by directory would silently send this
+      ;; prompt to a conversation that never saw the work it refers to.
+      ;; Checked here rather than inside the `condition-case' below, which
+      ;; would dress it up as a generic "Send failed", and after the
+      ;; write-back above, which is what makes the draft durable: the buffer
+      ;; the user was typing in is gone by now, so the message has to name the
+      ;; log file that still holds the text.
+      (unless (buffer-live-p cci-buf)
+        (set-marker mk nil)
+        (user-error "Target Claude instance is gone; prompt kept as EDITING in %s -- M-p recalls it"
+                    (file-name-nondirectory (plist-get ctx :file-path))))
       (condition-case err
           (progn
-            (if (buffer-live-p cci-buf)
-                ;; Name the instance outright rather than leaning on the
-                ;; current buffer: with several per project, resolution from
-                ;; ambient state can land on a sibling
-                (claude-code-ide-send-prompt
-                 text (claude-code-ide--buffer-session cci-buf))
-              (let ((default-directory root))
-                (claude-code-ide-send-prompt text)))
+            ;; Name the instance outright rather than leaning on the current
+            ;; buffer: with several per project, resolution from ambient
+            ;; state can land on a sibling
+            (claude-code-ide-send-prompt
+             text (claude-code-ide--buffer-session cci-buf))
             (with-current-buffer log-buf
               (when (and found (le::cci-prompt2--goto-own-heading mk id))
                 (le::cci-prompt2--flip-state-and-save "COMMITTED")))
-            (message "Prompt sent to %s"
-                     (if (buffer-live-p cci-buf) (buffer-name cci-buf) root)))
+            ;; Only a conversation that actually received the prompt is worth
+            ;; recording, so this sits in the success branch: a failed send
+            ;; leaves the task's list exactly as it was.
+            (le::cci-task-sessions-record
+             (plist-get ctx :task-marker)
+             (plist-get ctx :task-title)
+             (car (le::cci-prompt2--cci-session-uuids cci-buf)))
+            (message "Prompt sent to %s" (buffer-name cci-buf)))
         (error
          (message "Send failed (%s); draft kept as EDITING -- M-p recalls it"
                   (error-message-string err)))))
@@ -134,7 +154,7 @@ buffer untouched."
   (let* ((ctx (le::cci-prompt2--edit-context))
          (text (plist-get ctx :text))
          (id (plist-get ctx :id))
-         (mk (plist-get ctx :marker))
+         (mk (plist-get ctx :log-marker))
          (subject (le::cci-prompt2--extract-subject text))
          (keep (and (not (string-empty-p text))
                     (eq ?a (read-char-choice

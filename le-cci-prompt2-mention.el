@@ -23,31 +23,37 @@
 
 (defun le::cci-prompt2--capture-region-ref ()
   "If the current buffer has an active region and visits a file,
-return (:file F :beg B :end E :subject S) with 1-based inclusive line numbers,
-else nil.  FILE may not yet exist on disk (e.g. an unsaved buffer) — the
-caller is responsible for offering to save it before referencing it.
-SUBJECT is the org heading title of the entry containing the region
-start (stars, TODO keyword, priority, and tags stripped), or nil when the
-buffer is not org-mode or the region starts above the first heading."
+return (:file F :beg B :end E :subject S :subject-marker M) with 1-based
+inclusive line numbers, else nil.  FILE may not yet exist on disk (e.g. an
+unsaved buffer) — the caller is responsible for offering to save it before
+referencing it.  SUBJECT is the org heading title of the entry containing
+the region start (stars, TODO keyword, priority, and tags stripped), or nil
+when the buffer is not org-mode or the region starts above the first
+heading.  SUBJECT-MARKER points at that heading, so a later write can find
+it again across intervening edits; the two are captured together and
+validated against each other before anything is written."
   (when (and (use-region-p) buffer-file-name)
     (let* ((rb (region-beginning))
            (re (region-end))
            (beg (line-number-at-pos rb))
            (end (line-number-at-pos re))
-           (subject (when (derived-mode-p 'org-mode)
-                      (save-excursion
-                        (goto-char rb)
-                        (unless (org-before-first-heading-p)
-                          (org-back-to-heading t)
-                          (let ((h (string-trim
-                                    (substring-no-properties
-                                     (org-get-heading t t t t)))))
-                            (unless (string-empty-p h) h)))))))
+           (subject-cell (when (derived-mode-p 'org-mode)
+                           (save-excursion
+                             (goto-char rb)
+                             (unless (org-before-first-heading-p)
+                               (org-back-to-heading t)
+                               (let ((h (string-trim
+                                         (substring-no-properties
+                                          (org-get-heading t t t t)))))
+                                 (unless (string-empty-p h)
+                                   (cons h (point-marker)))))))))
       ;; If the region ends exactly at a line start, that trailing line isn't
       ;; really selected — exclude it (standard idiom).
       (when (and (> re rb) (save-excursion (goto-char re) (bolp)))
         (setq end (1- end)))
-      (list :file buffer-file-name :beg beg :end end :subject subject))))
+      (list :file buffer-file-name :beg beg :end end
+            :subject (car subject-cell)
+            :subject-marker (cdr subject-cell)))))
 
 (defun le::cci-prompt2--point-todo-ancestors ()
   "Return (SUBJECT . POINT) for each heading enclosing point that carries
@@ -83,19 +89,24 @@ TODO keyword (transient or done), or nil if none qualifies.  When more than one
 ancestor heading qualifies, prompts for which one, defaulting to the closest.  Includes
 :file/:beg/:end (the heading's own line, so the eventual @-mention
 points straight at it) when the buffer visits a file, else just
-:subject.  Used as the fallback to `le::cci-prompt2--capture-region-ref'
-when no region is active, so a \"re: SUBJECT\" line and a location
-reference still get added based on what task point is currently in."
+:subject and :subject-marker.  The marker survives edits the line
+number does not, so it is what a later write back to the heading uses;
+:subject is what validates it still points where it did.  Used as the
+fallback to `le::cci-prompt2--capture-region-ref' when no region is
+active, so a \"re: SUBJECT\" line and a location reference still get
+added based on what task point is currently in."
   (when-let* ((candidates (le::cci-prompt2--point-todo-ancestors)))
     (let* ((chosen (if (cdr candidates)
                         (completing-read "Subject heading: " candidates nil t
                                          nil nil (caar candidates))
                       (caar candidates)))
-           (pos (cdr (assoc chosen candidates))))
+           (pos (cdr (assoc chosen candidates)))
+           (marker (copy-marker pos)))
       (if buffer-file-name
           (let ((line (line-number-at-pos pos)))
-            (list :file buffer-file-name :beg line :end line :subject chosen))
-        (list :subject chosen)))))
+            (list :file buffer-file-name :beg line :end line
+                  :subject chosen :subject-marker marker))
+        (list :subject chosen :subject-marker marker)))))
 
 (defun le::cci-prompt2--file-reference (file beg end root)
   "Return the Claude Code @-mention \"@PATH#RANGE\" for FILE lines BEG..END.
