@@ -165,13 +165,20 @@ used to require."
 
 ;;;; Headline composition
 
-(defconst le::cci-prompt2--session-property "CCI_SESSION"
+(defconst le::cci-prompt2--session-property "CC_SESSION"
   "Property holding the CLI conversation uuid a prompt was composed for.
 The filter key behind session-scoped M-p/M-n: it is what
 `~/.claude/history.jsonl' records as `sessionId', so it scopes the org
 half of the history exactly as it scopes the CLI half.  A property
 rather than headline text because the uuid is machine data -- the
-headline carries the instance's readable label instead.")
+headline carries the instance's readable label instead.
+
+CC, not CCI: the uuid is Claude Code's own, naming a conversation, and
+NOT `claude-code-ide-mcp-session-session-id', which names the
+Emacs-managed instance (see le-cci-session-ids.el on the two
+namespaces).  Singular, one heading belonging to one conversation --
+distinct from `le::cci-task-sessions-property' (CC_SESSIONS), the list a
+task heading accumulates over every conversation it was worked on.")
 
 (defconst le::cci-prompt2--headline-label-re
   "\\`\\[[^]\n]+\\] (\\([^)\n]+\\))"

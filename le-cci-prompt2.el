@@ -45,7 +45,7 @@
 ;; carry second precision.  Both stores are project-wide and a project
 ;; runs several instances, so the merged list is then narrowed to the
 ;; conversations the target terminal has been on (`le-cci-session-ids';
-;; each heading records its own in a CCI_SESSION property and names its
+;; each heading records its own in a CC_SESSION property and names its
 ;; instance in the headline).  C-c C-s widens to the whole project and
 ;; back.  `yank-media' pastes a clipboard image as
 ;; a denote attachment beside the log file (<ts>--screenshot.png):
