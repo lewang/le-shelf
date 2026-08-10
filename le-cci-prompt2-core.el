@@ -30,6 +30,7 @@
 (declare-function claude-code-ide--get-working-directory "claude-code-ide")
 (declare-function claude-code-ide--buffer-session "claude-code-ide" (&optional buffer))
 (declare-function claude-code-ide--session-display-name "claude-code-ide" (session))
+(declare-function claude-code-ide--visible-project-sessions "claude-code-ide" (project-dir))
 (declare-function claude-code-ide-mcp--active-sessions "claude-code-ide-mcp" ())
 (declare-function claude-code-ide-mcp--mru-session "claude-code-ide-mcp" (project-dir))
 (declare-function claude-code-ide-mcp-session-buffer "claude-code-ide-mcp" (session))
@@ -100,13 +101,31 @@ rather than one entry per directory."
                 (buffer-live-p (claude-code-ide-mcp-session-buffer session)))
               (claude-code-ide-mcp--active-sessions)))
 
+(defun le::cci-prompt2--pick-session (visible mru)
+  "Choose between the VISIBLE sessions of a project and its MRU session.
+A lone VISIBLE session is the one the user is looking at, so it wins.
+With none or several displayed there is nothing better to go on and MRU
+carries it -- weakly, since hiding an instance stamps it as recently
+used, ranking the one just dismissed above the one still on screen."
+  (if (and visible (null (cdr visible)))
+      (car visible)
+    mru))
+
 (defun le::cci-prompt2--session-for-root (root)
   "Return the CCI session ROOT's prompts should target, or nil.
-With several instances in one project the most recently used one wins:
-it is the one the user was last talking to, and unlike position in the
-session table that choice is stable across renders."
+With several instances in one project the one displayed in the selected
+frame wins; see `le::cci-prompt2--pick-session' for the rule.
+
+Mirrors the policy of `claude-code-ide--resolve-session', which cannot be
+called here: it resolves against `claude-code-ide--get-working-directory'
+rather than a caller-supplied ROOT, and two of this function's callers
+pass a root of their own -- the `w' workspace's project root and the
+emacsclient connection's working directory."
   (when root
-    (claude-code-ide-mcp--mru-session (expand-file-name root))))
+    (let ((dir (expand-file-name root)))
+      (le::cci-prompt2--pick-session
+       (claude-code-ide--visible-project-sessions dir)
+       (claude-code-ide-mcp--mru-session dir)))))
 
 (defun le::cci-prompt2--dir-for-cci-buffer (cci-buf)
   "Return the project directory CCI-BUF belongs to, or nil.
