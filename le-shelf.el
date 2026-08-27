@@ -23,38 +23,35 @@ count is tracked:
 
   1. whitespace after point, up to the end of the line,
   2. whitespace before point, back to the beginning of the line,
-  3. the line break and the whitespace hugging it, merging this line into
-     the previous one.
+  3. with point at the beginning of a line, the line break before it,
+     merging this line into the previous one.
 
-Return nil when there is nothing left to delete."
+Only whitespace touching point is ever considered.  Return nil when there
+is none."
   (let ((right (save-excursion (skip-chars-forward " \t") (point)))
         (left (save-excursion (skip-chars-backward " \t") (point))))
     (cond ((> right (point)) (cons (point) right))
           ((< left (point)) (cons left (point)))
-          ((not (bobp))
-           (let ((bol (line-beginning-position)))
-             (cons (save-excursion
-                     (goto-char bol)
-                     (skip-chars-backward " \t\n")
-                     (point))
-                   (save-excursion
-                     (goto-char bol)
-                     (skip-chars-forward " \t")
-                     (point))))))))
+          ((and (bolp) (not (bobp)))
+           (cons (save-excursion (skip-chars-backward " \t\n") (point))
+                 (point))))))
 
 ;;;###autoload
 (defun le-cycle-spacing (&optional arg)
   "Delete the whitespace around point one step at a time.
 
 Successive presses clear the space to the right, then the space to the
-left, then the line break -- see `le-cycle-spacing--region'.
+left, then the line break -- see `le-cycle-spacing--region'.  Whitespace
+that does not touch point is left alone, and a press with none to delete
+only reports that.
 
 With prefix ARG, defer to `cycle-spacing'."
   (interactive "*P")
   (if arg
       (cycle-spacing arg)
-    (when-let* ((region (le-cycle-spacing--region)))
-      (delete-region (car region) (cdr region)))))
+    (if-let* ((region (le-cycle-spacing--region)))
+        (delete-region (car region) (cdr region))
+      (message "No whitespace around point"))))
 
 
 

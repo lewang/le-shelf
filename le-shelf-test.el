@@ -7,7 +7,8 @@
 ;; whitespace the next press deletes.  Since no press count is tracked, the
 ;; cases that carry weight are the ones where two kinds of whitespace are
 ;; available at once -- right beats left, left beats the line break -- and
-;; the boundaries that keep a step from running past the line it belongs to.
+;; the boundaries that keep a press from touching whitespace point is not
+;; sitting against.
 ;;
 ;; Run in batch:
 ;;
@@ -46,7 +47,11 @@ Point is written as \"|\" in BEFORE and in the returned string."
 
 (ert-deftest le-shelf-test-cycle-spacing-merges-line-third ()
   (should (equal (le-shelf-test--cycle "foo\n|bar") "foo|bar"))
-  (should (equal (le-shelf-test--cycle "foo\nbar|baz") "foobar|baz")))
+  (should (equal (le-shelf-test--cycle "foo  \n|bar") "foo|bar")))
+
+(ert-deftest le-shelf-test-cycle-spacing-leaves-untouching-whitespace-alone ()
+  (should (equal (le-shelf-test--cycle "foo\nbar|baz") "foo\nbar|baz"))
+  (should (equal (le-shelf-test--cycle "foo\n  bar|baz") "foo\n  bar|baz")))
 
 (ert-deftest le-shelf-test-cycle-spacing-merge-eats-blank-lines ()
   (should (equal (le-shelf-test--cycle "foo  \n\n  \n|bar") "foo|bar")))
