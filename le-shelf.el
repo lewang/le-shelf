@@ -15,17 +15,46 @@
 
 ;;; Code:
 
+(defun le-cycle-spacing--region ()
+  "Return the whitespace `le-cycle-spacing' deletes next, as (BEG . END).
+
+The whitespace still standing around point decides the step, so no press
+count is tracked:
+
+  1. whitespace after point, up to the end of the line,
+  2. whitespace before point, back to the beginning of the line,
+  3. the line break and the whitespace hugging it, merging this line into
+     the previous one.
+
+Return nil when there is nothing left to delete."
+  (let ((right (save-excursion (skip-chars-forward " \t") (point)))
+        (left (save-excursion (skip-chars-backward " \t") (point))))
+    (cond ((> right (point)) (cons (point) right))
+          ((< left (point)) (cons left (point)))
+          ((not (bobp))
+           (let ((bol (line-beginning-position)))
+             (cons (save-excursion
+                     (goto-char bol)
+                     (skip-chars-backward " \t\n")
+                     (point))
+                   (save-excursion
+                     (goto-char bol)
+                     (skip-chars-forward " \t")
+                     (point))))))))
+
 ;;;###autoload
-(defun le-cycle-spacing (arg)
+(defun le-cycle-spacing (&optional arg)
+  "Delete the whitespace around point one step at a time.
+
+Successive presses clear the space to the right, then the space to the
+left, then the line break -- see `le-cycle-spacing--region'.
+
+With prefix ARG, defer to `cycle-spacing'."
   (interactive "*P")
-  (cycle-spacing (if (eq arg nil)
-                     '-
-                   arg))
-  ;; remove spacek ") )" in lisps
-  (if (save-excursion
-        (goto-char (- (point) 2))
-        (looking-at ") )"))
-      (delete-char -1)))
+  (if arg
+      (cycle-spacing arg)
+    (when-let* ((region (le-cycle-spacing--region)))
+      (delete-region (car region) (cdr region)))))
 
 
 
