@@ -42,8 +42,7 @@ is none."
 
 Successive presses clear the space to the right, then the space to the
 left, then the line break -- see `le-cycle-spacing--region'.  Whitespace
-that does not touch point is left alone, and a press with none to delete
-only reports that.
+that does not touch point is left alone.
 
 With prefix ARG, defer to `cycle-spacing'."
   (interactive "*P")
