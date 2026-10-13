@@ -24,7 +24,9 @@ count is tracked:
   1. whitespace after point, up to the end of the line,
   2. whitespace before point, back to the beginning of the line,
   3. with point at the beginning of a line, the line break before it,
-     merging this line into the previous one.
+     merging this line into the previous one,
+  4. once nothing remains behind point, with point at the end of a line,
+     the line break after it, merging the next line into this one.
 
 Only whitespace touching point is ever considered.  Return nil when there
 is none."
@@ -34,15 +36,19 @@ is none."
           ((< left (point)) (cons left (point)))
           ((and (bolp) (not (bobp)))
            (cons (save-excursion (skip-chars-backward " \t\n") (point))
-                 (point))))))
+                 (point)))
+          ((and (eolp) (not (eobp)))
+           (cons (point)
+                 (save-excursion (skip-chars-forward " \t\n") (point)))))))
 
 ;;;###autoload
 (defun le-cycle-spacing (&optional arg)
   "Delete the whitespace around point one step at a time.
 
 Successive presses clear the space to the right, then the space to the
-left, then the line break -- see `le-cycle-spacing--region'.  Whitespace
-that does not touch point is left alone.
+left, then the line break before point, then the one after it -- see
+`le-cycle-spacing--region'.  Whitespace that does not touch point is
+left alone.
 
 With prefix ARG, defer to `cycle-spacing'."
   (interactive "*P")

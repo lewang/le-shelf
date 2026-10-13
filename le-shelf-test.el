@@ -59,6 +59,20 @@ Point is written as \"|\" in BEFORE and in the returned string."
 (ert-deftest le-shelf-test-cycle-spacing-noop-at-beginning-of-buffer ()
   (should (equal (le-shelf-test--cycle "|foo") "|foo")))
 
+(ert-deftest le-shelf-test-cycle-spacing-merges-next-line-fourth ()
+  (should (equal (le-shelf-test--cycle "foo|\nbar") "foo|bar"))
+  (should (equal (le-shelf-test--cycle "foo|\n  bar") "foo|bar"))
+  (should (equal (le-shelf-test--cycle "|\n  bar") "|bar")))
+
+(ert-deftest le-shelf-test-cycle-spacing-merge-backward-beats-forward ()
+  (should (equal (le-shelf-test--cycle "foo\n|\nbar") "foo|\nbar")))
+
+(ert-deftest le-shelf-test-cycle-spacing-forward-merge-eats-blank-lines ()
+  (should (equal (le-shelf-test--cycle "foo|\n\n  \n  bar") "foo|bar")))
+
+(ert-deftest le-shelf-test-cycle-spacing-noop-at-end-of-buffer ()
+  (should (equal (le-shelf-test--cycle "foo|") "foo|")))
+
 (ert-deftest le-shelf-test-cycle-spacing-three-presses-join-lisp-parens ()
   (should (equal (le-shelf-test--cycle ") |  )") ") |)"))
   (should (equal (le-shelf-test--cycle ") |)") ")|)")))
