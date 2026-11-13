@@ -424,6 +424,7 @@ buffer behind, and the interactive `find-journal' re-opens the path itself."
         (denote-kill-buffers t))
     (denote title tags 'org dir)))
 
+;;;###autoload
 (defun le::denote-tasks-resolve-journal (origin)
   "Return the journal note path for ORIGIN's checkout, creating it if missing.
 The resolving half of `le::denote-tasks-find-journal' -- the whole of it but the
